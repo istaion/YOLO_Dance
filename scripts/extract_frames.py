@@ -1,1 +1,0 @@
-# Découpe les vidéos en images
