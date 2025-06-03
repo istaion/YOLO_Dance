@@ -1,4 +1,6 @@
+# Pour app
 streamlit
 opencv-python
 numpy
 Pillow
+requests
