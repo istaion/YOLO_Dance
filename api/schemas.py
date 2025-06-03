@@ -1,0 +1,1 @@
+# (optionnel) Schémas de validation Pydantic
