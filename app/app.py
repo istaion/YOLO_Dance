@@ -1,0 +1,1 @@
+# Lance l'app Streamlit, récupère webcam et envoie à l'API
