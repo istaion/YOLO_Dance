@@ -199,3 +199,4 @@ images/
 *.jpg
 *.jpeg
 *.csv
+yolov8n-pose.pt

@@ -14,19 +14,27 @@ class WebcamGestureDetector:
         self.last_photo_time = 0
         self.photo_count = 0
         
+        # Variables spéciales pour le saut
+        self.jump_peak_frame = None  # Stocke la frame du pic de saut
+        
         # États des gestes
         self.current_gesture = "None"
         self.gesture_start_time = 0
         self.gesture_duration_threshold = 1.0  # Maintenir le geste 1 seconde
         
-    def take_photo(self, frame):
+    def take_photo(self, frame, gesture_type="gesture"):
         """
         Prend une photo et la sauvegarde
         """
         current_time = time.time()
         if current_time - self.last_photo_time > self.photo_cooldown:
             self.photo_count += 1
-            filename = f"karaoke_photo_{self.photo_count:03d}.jpg"
+            
+            # Créer le dossier images s'il n'existe pas
+            import os
+            os.makedirs("../images", exist_ok=True)
+            
+            filename = f"../images/karaoke_{gesture_type}_{self.photo_count:03d}.jpg"
             cv2.imwrite(filename, frame)
             print(f"📸 Photo prise : {filename}")
             self.last_photo_time = current_time
@@ -48,16 +56,37 @@ class WebcamGestureDetector:
         
         gesture_detected = False
         detected_gesture = "None"
+        photo_taken = False
         
         if keypoints_data:
             kp_data = keypoints_data[0]  # Premier personne
             keypoints = kp_data['keypoints']
             conf = kp_data['confidence']
             
-            # Tester différents gestes dans l'ordre de priorité
-            if self.pose_detector.detect_gesture(keypoints, conf, "jump"):
+            # Ajouter position à l'historique pour détection de saut
+            self.pose_detector.add_position_to_history(keypoints, conf, frame.copy())
+            
+            # Tester le saut en premier (priorité car temporel)
+            jump_result = self.pose_detector.detect_gesture(keypoints, conf, "jump")
+            if isinstance(jump_result, dict) and jump_result['detected']:
                 detected_gesture = "Jump"
                 gesture_detected = True
+                
+                # Capturer au pic du saut
+                if jump_result['should_capture'] and jump_result['peak_frame'] is not None:
+                    photo_taken = self.take_photo(jump_result['peak_frame'], "jump_peak")
+                    if photo_taken:
+                        print(f"🦘 Saut détecté - Photo au pic! Phase: {jump_result['phase']}")
+                        # Ajouter effet visuel
+                        overlay = frame.copy()
+                        cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 255, 255), -1)
+                        frame = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
+                
+                # Afficher la phase du saut
+                cv2.putText(frame, f"JUMP: {jump_result['phase']}", (50, 80), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # Tester les autres gestes seulement si pas de saut
             elif self.pose_detector.detect_gesture(keypoints, conf, "dab"):
                 detected_gesture = "Dab"
                 gesture_detected = True
@@ -68,26 +97,28 @@ class WebcamGestureDetector:
                 detected_gesture = "Twerk"
                 gesture_detected = True
         
-        # Gestion de la continuité du geste
+        # Gestion de la continuité des gestes (sauf saut qui a sa propre logique)
         current_time = time.time()
         
-        if gesture_detected and detected_gesture == self.current_gesture:
-            # Geste maintenu
-            if current_time - self.gesture_start_time > self.gesture_duration_threshold:
-                # Prendre une photo
-                if self.take_photo(frame):
-                    # Ajouter un effet visuel pour la photo
-                    overlay = frame.copy()
-                    cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (255, 255, 255), -1)
-                    frame = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
-                
-        elif gesture_detected and detected_gesture != self.current_gesture:
-            # Nouveau geste détecté
-            self.current_gesture = detected_gesture
-            self.gesture_start_time = current_time
-        elif not gesture_detected:
-            # Aucun geste
-            self.current_gesture = "None"
+        if detected_gesture != "Jump":  # Les autres gestes utilisent l'ancienne logique
+            if gesture_detected and detected_gesture == self.current_gesture:
+                # Geste maintenu
+                if current_time - self.gesture_start_time > self.gesture_duration_threshold:
+                    # Prendre une photo
+                    if self.take_photo(frame, detected_gesture.lower().replace(" ", "_")):
+                        # Ajouter un effet visuel pour la photo
+                        overlay = frame.copy()
+                        cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (255, 255, 255), -1)
+                        frame = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
+                        photo_taken = True
+                    
+            elif gesture_detected and detected_gesture != self.current_gesture:
+                # Nouveau geste détecté
+                self.current_gesture = detected_gesture
+                self.gesture_start_time = current_time
+            elif not gesture_detected:
+                # Aucun geste
+                self.current_gesture = "None"
         
         return frame, detected_gesture, gesture_detected
     

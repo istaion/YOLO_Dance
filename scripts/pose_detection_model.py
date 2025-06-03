@@ -25,6 +25,17 @@ class PoseDetector:
             [8, 10], [9, 11], [2, 3], [1, 2], [1, 3],
             [2, 4], [3, 5], [4, 6], [5, 7]
         ]
+
+        # Historique pour détection de saut
+        self.position_history = []  # Stocke les positions des dernières frames
+        self.max_history_length = 20  # Nombre de frames à conserver
+        self.jump_state = {
+            'in_jump': False,
+            'peak_frame': None,
+            'peak_height': 0,
+            'start_height': 0,
+            'frames_since_peak': 0
+        }
     
     def detect_poses(self, frame):
         """
@@ -33,12 +44,117 @@ class PoseDetector:
         results = self.model(frame, verbose=False)
         return results
     
+    def add_position_to_history(self, keypoints, conf, frame=None):
+        """Ajoute la position actuelle à l'historique pour analyse temporelle"""
+        if len(keypoints) == 0:
+            return
+            
+        kp = keypoints[0]  # Premier personne détectée
+        c = conf[0]
+        
+        # Calculer la position moyenne du corps (bassin + épaules)
+        left_shoulder = 5
+        right_shoulder = 6
+        left_hip = 11
+        right_hip = 12
+        
+        if (c[left_shoulder] > 0.4 and c[right_shoulder] > 0.4 and 
+            c[left_hip] > 0.4 and c[right_hip] > 0.4):
+            
+            # Position moyenne du bassin
+            hip_center_y = (kp[left_hip][1] + kp[right_hip][1]) / 2
+            
+            # Position moyenne des épaules
+            shoulder_center_y = (kp[left_shoulder][1] + kp[right_shoulder][1]) / 2
+            
+            # Position moyenne du corps (pour le saut)
+            body_center_y = (hip_center_y + shoulder_center_y) / 2
+            
+            # Ajouter à l'historique
+            position_data = {
+                'body_center_y': body_center_y,
+                'hip_center_y': hip_center_y,
+                'shoulder_center_y': shoulder_center_y,
+                'frame': frame,
+                'timestamp': cv2.getTickCount()
+            }
+            
+            self.position_history.append(position_data)
+            
+            # Limiter la taille de l'historique
+            if len(self.position_history) > self.max_history_length:
+                self.position_history.pop(0)
+
+    def detect_jump_motion(self):
+        """
+        Détecte un saut basé sur l'analyse temporelle du mouvement
+        Retourne: (is_jumping, peak_frame, jump_phase)
+        """
+        if len(self.position_history) < 10:  # Besoin d'au moins 10 frames
+            return False, None, "insufficient_data"
+        
+        # Extraire les positions Y du corps
+        body_positions = [pos['body_center_y'] for pos in self.position_history]
+        
+        # Calculer les variations de position
+        position_changes = np.diff(body_positions)
+        
+        # Détecter élévation brusque (mouvement vers le haut = valeurs négatives)
+        recent_changes = position_changes[-5:]  # 5 dernières frames
+        rapid_elevation = np.mean(recent_changes) < -8  # Seuil d'élévation rapide
+        
+        current_height = body_positions[-1]
+        
+        # Machine à états pour le saut
+        if not self.jump_state['in_jump']:
+            # Recherche début de saut (élévation rapide)
+            if rapid_elevation:
+                self.jump_state['in_jump'] = True
+                self.jump_state['start_height'] = current_height
+                self.jump_state['peak_height'] = current_height
+                self.jump_state['peak_frame'] = self.position_history[-1]['frame']
+                self.jump_state['frames_since_peak'] = 0
+                return True, None, "jump_start"
+        
+        else:
+            # En cours de saut - suivre le pic
+            self.jump_state['frames_since_peak'] += 1
+            
+            # Nouveau pic détecté
+            if current_height < self.jump_state['peak_height']:  # Plus haut (Y plus petit)
+                self.jump_state['peak_height'] = current_height
+                self.jump_state['peak_frame'] = self.position_history[-1]['frame']
+                self.jump_state['frames_since_peak'] = 0
+                return True, self.jump_state['peak_frame'], "jump_peak"
+            
+            # Détection de la redescente
+            elif (self.jump_state['frames_since_peak'] > 3 and 
+                  current_height > self.jump_state['start_height'] - 20):  # Retour proche position initiale
+                
+                # Fin du saut
+                peak_frame = self.jump_state['peak_frame']
+                self.jump_state['in_jump'] = False
+                self.jump_state['frames_since_peak'] = 0
+                
+                return True, peak_frame, "jump_complete"
+            
+            # Toujours en saut
+            elif self.jump_state['frames_since_peak'] < 15:  # Max 15 frames pour un saut
+                return True, None, "jump_in_progress"
+            
+            else:
+                # Timeout - fin forcée du saut
+                self.jump_state['in_jump'] = False
+                return False, None, "jump_timeout"
+        
+        return False, None, "no_jump"
+
     def draw_keypoints(self, frame, results):
         """
         Dessine les keypoints et le squelette sur l'image
         """
         for result in results:
-            if result.keypoints is not None:
+            if result.keypoints is not None and len(result.keypoints.xy) > 0:
                 keypoints = result.keypoints.xy.cpu().numpy()
                 conf = result.keypoints.conf.cpu().numpy()
                 
@@ -53,7 +169,8 @@ class PoseDetector:
                     # Dessiner le squelette
                     for connection in self.skeleton:
                         kp1, kp2 = connection[0]-1, connection[1]-1  # COCO est 1-indexé
-                        if (person_conf[kp1] > 0.5 and person_conf[kp2] > 0.5):
+                        if (kp1 < len(person_conf) and kp2 < len(person_conf) and
+                            person_conf[kp1] > 0.5 and person_conf[kp2] > 0.5):
                             x1, y1 = int(person_kp[kp1][0]), int(person_kp[kp1][1])
                             x2, y2 = int(person_kp[kp2][0]), int(person_kp[kp2][1])
                             cv2.line(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
@@ -126,31 +243,25 @@ class PoseDetector:
                 return (left_up and right_down) or (right_up and left_down)
         
         elif gesture_type == "jump":
-            # Détection du saut basée sur la position des genoux et chevilles
-            if (c[left_knee] > 0.4 and c[right_knee] > 0.4 and 
-                c[left_hip] > 0.4 and c[right_hip] > 0.4):
-                
-                # Calculer la distance moyenne genoux-hanches
-                left_knee_hip_dist = kp[left_hip][1] - kp[left_knee][1]
-                right_knee_hip_dist = kp[right_hip][1] - kp[right_knee][1]
-                avg_knee_hip_dist = (left_knee_hip_dist + right_knee_hip_dist) / 2
-                
-                # Saut détecté si genoux très proches des hanches (jambes repliées)
-                jump_threshold = 40  # Seuil en pixels
-                knees_raised = avg_knee_hip_dist < jump_threshold
-                
-                # Vérification supplémentaire : les chevilles sont aussi relevées si visibles
-                ankles_raised = True
-                if c[left_ankle] > 0.4 and c[right_ankle] > 0.4:
-                    left_ankle_ground_dist = kp[left_ankle][1]
-                    right_ankle_ground_dist = kp[right_ankle][1]
-                    
-                    # Comparer avec la position "normale" des chevilles (estimation)
-                    estimated_ground = max(kp[left_hip][1], kp[right_hip][1]) + 200
-                    ankles_raised = (left_ankle_ground_dist < estimated_ground - 50 and 
-                                   right_ankle_ground_dist < estimated_ground - 50)
-                
-                return knees_raised and ankles_raised
+            # Nouvelle détection du saut basée sur l'analyse temporelle
+            # Cette fonction doit être appelée après add_position_to_history()
+            is_jumping, peak_frame, jump_phase = self.detect_jump_motion()
+            
+            # Retourner les informations du saut
+            if is_jumping:
+                return {
+                    'detected': True,
+                    'phase': jump_phase,
+                    'peak_frame': peak_frame,
+                    'should_capture': jump_phase in ['jump_peak', 'jump_complete']
+                }
+            else:
+                return {
+                    'detected': False,
+                    'phase': jump_phase,
+                    'peak_frame': None,
+                    'should_capture': False
+                }
         
         elif gesture_type == "twerk":
             # Détection du twerk basée sur position accroupie et hanches proéminentes
@@ -184,7 +295,7 @@ class PoseDetector:
         keypoints_data = []
         
         for result in results:
-            if result.keypoints is not None:
+            if result.keypoints is not None and len(result.keypoints.xy) > 0:
                 keypoints = result.keypoints.xy.cpu().numpy()
                 conf = result.keypoints.conf.cpu().numpy()
                 keypoints_data.append({
