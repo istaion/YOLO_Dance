@@ -1,1 +1,0 @@
-# Détection (mock ou vrai modèle)
