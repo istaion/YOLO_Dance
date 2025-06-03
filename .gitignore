@@ -194,3 +194,5 @@ cython_debug/
 .cursorindexingignore
 
 coco_dataset/
+data/
+images/
