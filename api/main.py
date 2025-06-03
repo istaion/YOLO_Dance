@@ -6,7 +6,10 @@ import uvicorn
 import numpy as np
 import cv2
 
-app = FastAPI()
+
+
+
+app = FastAPI(title="YOLO_Dance")
 
 # Autoriser les requêtes depuis Streamlit
 app.add_middleware(
