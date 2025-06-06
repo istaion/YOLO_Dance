@@ -1,6 +1,7 @@
 # Entrée FastAPI
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from routes import inference, log
 import random
 import uvicorn
 import numpy as np
@@ -18,6 +19,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Ajouter les routes
+app.include_router(inference.router, prefix="/api")
+app.include_router(log.router, prefix="/log")
 
 @app.post("/detect/")
 async def detect(file: UploadFile = File(...)):

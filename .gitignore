@@ -200,3 +200,4 @@ images/
 *.jpeg
 *.csv
 yolov8n-pose.pt
+*.db
