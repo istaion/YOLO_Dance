@@ -1,0 +1,23 @@
+{
+    "data_path": "data/dataset/images",
+    "output_dir": "outputs",
+    "model_type": "keypoint",
+    "yolo_model": "yolov8n-pose.pt",
+    "num_classes": 6,
+    "freeze_yolo": false,
+    "hidden_dims": [
+        256,
+        128
+    ],
+    "dropout": 0.3,
+    "epochs": 50,
+    "batch_size": 16,
+    "lr": 0.001,
+    "weight_decay": 0.0001,
+    "optimizer": "adam",
+    "scheduler": "cosine",
+    "step_size": 10,
+    "gamma": 0.1,
+    "img_size": 640,
+    "num_workers": 4
+}

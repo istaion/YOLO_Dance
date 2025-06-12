@@ -1,10 +1,10 @@
-# teachable_machine_adapter_simple.py
 import numpy as np
 import cv2
 import json
 import os
 from typing import List, Dict, Tuple, Optional
 import mediapipe as mp
+from pathlib import Path
 
 class TeachableMachinePoseDetector:
     def __init__(self, model_dir: str):
@@ -15,7 +15,7 @@ class TeachableMachinePoseDetector:
         Args:
             model_dir: Chemin vers le dossier contenant metadata.json
         """
-        self.model_dir = model_dir
+        self.model_dir = Path(model_dir)
         self.metadata = None
         self.labels = []
         
@@ -39,19 +39,26 @@ class TeachableMachinePoseDetector:
     def _load_metadata(self):
         """Charge les métadonnées du modèle"""
         try:
-            metadata_path = os.path.join(self.model_dir, 'metadata.json')
-            with open(metadata_path, 'r') as f:
-                self.metadata = json.load(f)
-            
-            self.labels = self.metadata['labels']
-            print(f"Labels détectés: {self.labels}")
-            
+            # Chercher metadata.json dans le répertoire
+            metadata_files = list(self.model_dir.glob('**/metadata.json'))
+            if metadata_files:
+                metadata_path = metadata_files[0]
+                with open(metadata_path, 'r') as f:
+                    self.metadata = json.load(f)
+                
+                self.labels = self.metadata.get('labels', [])
+                print(f"✅ Labels TM détectés: {self.labels}")
+            else:
+                print(f"⚠️ metadata.json non trouvé dans {self.model_dir}")
+                raise FileNotFoundError("metadata.json non trouvé")
+                
         except Exception as e:
-            print(f"Erreur lors du chargement des métadonnées: {e}")
-            # Labels par défaut basés sur votre modèle
+            print(f"⚠️ Erreur lors du chargement des métadonnées: {e}")
+            # Labels par défaut basés sur un modèle TM standard
             self.labels = ["Twerk", "RussianMoove", "PasDuBourré", "V_Signs", "Funk", 
                           "Floss", "Macaréna", "Dab", "CrossArm", "CrossFeeat", 
                           "GlassMoove", "Fuck", "JulSign", "Neutral", "Blood"]
+            print(f"🔄 Utilisation des labels par défaut: {len(self.labels)} classes")
     
     def _setup_gesture_rules(self):
         """Configure les règles de détection des gestes basées sur les keypoints"""

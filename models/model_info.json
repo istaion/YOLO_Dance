@@ -1,0 +1,31 @@
+{
+  "classes": [
+    "hands_up",
+    "dab",
+    "twerk",
+    "mic_drop",
+    "middle_finger",
+    "peace",
+    "heart",
+    "jule",
+    "neutral"
+  ],
+  "num_classes": 9,
+  "input_dim": 110,
+  "config": {
+    "batch_size": 32,
+    "epochs": 100,
+    "validation_split": 0.2,
+    "learning_rate": 0.001,
+    "dropout_rate": 0.3,
+    "l2_reg": 0.01
+  },
+  "test_accuracy": 0.0,
+  "test_mae_face": 0.0,
+  "all_test_metrics": {
+    "loss": 1.7913424968719482,
+    "compile_metrics": 1.2894984483718872,
+    "pose_classification_loss": 0.012903017923235893,
+    "face_position_loss": 0.07097563147544861
+  }
+}
