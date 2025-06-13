@@ -1,1 +1,1 @@
-# Chargement du modèle (YOLO, MediaPipe, etc.)
+# Chargement du modèle (YOLO, MediaPipe, etc.)# app/model.py

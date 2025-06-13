@@ -7,6 +7,13 @@ from datetime import datetime
 import os
 import time
 import sys
+import asyncio
+
+# try:
+#     asyncio.get_running_loop()
+# except RuntimeError:
+#     asyncio.set_event_loop(asyncio.new_event_loop())
+
 
 # Ajouter le dossier parent pour importer vos modules
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))

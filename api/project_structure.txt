@@ -1,1 +1,3 @@
 # 🔌 API backend FastAPI qui fait tourner le modèle TensorFlow
+
+Avant de lancer l'API, il faut run le fichier create_tables.py dans database/ pour créer la db.
