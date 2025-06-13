@@ -1,6 +1,7 @@
+#api/schemas.py
+
 # (optionnel) Schémas de validation Pydantic
 
-# app/schemas.py
 from pydantic import BaseModel, EmailStr
 
 class PredictionResponse(BaseModel):

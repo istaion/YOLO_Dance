@@ -1,3 +1,5 @@
+#api/pose_detection_model.py
+
 import cv2
 import numpy as np
 from ultralytics import YOLO
