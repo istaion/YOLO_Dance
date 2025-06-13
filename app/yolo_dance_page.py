@@ -1,61 +1,156 @@
+import streamlit as st
 import cv2
 import numpy as np
 from datetime import datetime
 import os
 import time
-import torch
-import sys
-import streamlit as st
+import requests
+import base64
+import json
+from io import BytesIO
+from PIL import Image
 
-# Ajouter le chemin vers les scripts YOLO
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts', 'yolo_pipeline'))
-
-# Importer le système pondéré et les filtres
-try:
-    from yolo_model_weighted import YoloDanceSystemWeighted
-    WEIGHTED_AVAILABLE = True
-except ImportError:
-    from yolo_model import YoloDanceSystem
-    WEIGHTED_AVAILABLE = False
-    st.warning("⚠️ Modèle pondéré non disponible, utilisation du modèle standard")
-
-# Importer le système de filtres
-from utils import GestureFilterSystem
+class YOLODanceAPIClient:
+    """Client pour l'API YOLO Dance"""
+    
+    def __init__(self, api_url="http://localhost:8000"):
+        self.api_url = api_url
+        self.session = requests.Session()
+        
+    def check_api_health(self):
+        """Vérifie l'état de l'API"""
+        try:
+            response = self.session.get(f"{self.api_url}/health/", timeout=5)
+            return response.status_code == 200, response.json()
+        except Exception as e:
+            return False, {"error": str(e)}
+    
+    def get_available_models(self):
+        """Récupère la liste des modèles disponibles"""
+        try:
+            response = self.session.get(f"{self.api_url}/models/", timeout=5)
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except Exception as e:
+            st.error(f"Erreur récupération modèles: {e}")
+            return None
+    
+    def detect_gesture(self, image, model_type="weighted", apply_filters=False, 
+                      custom_thresholds=None, return_image=False):
+        """Détection de geste via l'API"""
+        try:
+            # Encoder l'image
+            _, buffer = cv2.imencode('.jpg', image)
+            
+            # Préparer les données
+            files = {'file': ('frame.jpg', buffer.tobytes(), 'image/jpeg')}
+            data = {
+                'model_type': model_type,
+                'apply_filters': apply_filters,
+                'return_image': return_image,
+                'return_debug': True
+            }
+            
+            if custom_thresholds:
+                data['custom_thresholds'] = json.dumps(custom_thresholds)
+            
+            # Requête API
+            response = self.session.post(
+                f"{self.api_url}/detect_advanced/",
+                files=files,
+                data=data,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Décoder l'image si présente
+                if 'annotated_image' in result:
+                    img_data = base64.b64decode(result['annotated_image'])
+                    nparr = np.frombuffer(img_data, np.uint8)
+                    annotated_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    result['annotated_image_array'] = annotated_img
+                
+                return True, result
+            else:
+                return False, {"error": f"API Error: {response.status_code}"}
+                
+        except Exception as e:
+            return False, {"error": str(e)}
 
 def show_yolo_dance_page():
-    """Page YOLO Dance avec support de pondération et seuils par classe"""
+    """Page YOLO Dance utilisant l'API FastAPI"""
     
     # Configuration des chemins
     SAVE_DIR = os.path.join(os.path.dirname(__file__), "..", "images", "yolo_dance")
-    
-    # Chemins des modèles
-    WEIGHTED_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "final_weighted_model.pth")
-    STANDARD_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "best_model.pth")
-    
     os.makedirs(SAVE_DIR, exist_ok=True)
+    
+    # Configuration de l'API
+    st.sidebar.header("🔌 Configuration API")
+    api_url = st.sidebar.text_input(
+        "URL de l'API", 
+        value="http://localhost:8000",
+        help="Adresse de votre API YOLO Dance"
+    )
+    
+    # Initialiser le client API
+    api_client = YOLODanceAPIClient(api_url)
+    
+    # Vérifier la connexion API
+    is_connected, health_data = api_client.check_api_health()
+    
+    if is_connected:
+        st.sidebar.success("✅ API connectée")
+        
+        # Afficher l'état des modèles
+        models_status = health_data.get('models', {})
+        for model_name, is_available in models_status.items():
+            status_icon = "✅" if is_available else "❌"
+            st.sidebar.write(f"{status_icon} {model_name.title()}")
+        
+        filters_status = "✅" if health_data.get('filters', False) else "❌"
+        st.sidebar.write(f"{filters_status} Filtres")
+        
+    else:
+        st.sidebar.error("❌ API non disponible")
+        st.error("🚨 Impossible de se connecter à l'API YOLO Dance")
+        st.info(f"""
+        **Vérifiez que l'API est démarrée :**
+        ```bash
+        cd api/
+        python main.py
+        ```
+        URL configurée: {api_url}
+        """)
+        return
+    
+    # Récupérer les modèles disponibles
+    models_info = api_client.get_available_models()
+    if not models_info:
+        st.error("Impossible de récupérer les informations des modèles")
+        return
+    
+    available_models = list(models_info.get('models', {}).keys())
+    default_thresholds = models_info.get('default_thresholds', {})
+    
+    if not available_models:
+        st.error("Aucun modèle disponible sur l'API")
+        return
     
     # Sélection du type de modèle
     st.sidebar.header("🎯 Type de modèle")
     
-    model_options = []
-    if WEIGHTED_AVAILABLE and os.path.exists(WEIGHTED_MODEL_PATH):
-        model_options.append("Pondéré (Recommandé)")
-    if os.path.exists(STANDARD_MODEL_PATH):
-        model_options.append("Standard")
-    
-    if not model_options:
-        st.error("❌ Aucun modèle YOLO trouvé!")
-        st.info("Placez un modèle dans le dossier models/")
-        return
-    
     selected_model = st.sidebar.selectbox(
         "Sélectionner le modèle",
-        model_options,
-        index=0
+        available_models,
+        index=0 if "weighted" in available_models else 0
     )
     
     # Affichage des informations du modèle
-    if selected_model == "Pondéré (Recommandé)":
+    model_info = models_info['models'][selected_model]
+    if selected_model == "weighted":
         st.sidebar.success("🎯 Modèle pondéré sélectionné")
         st.sidebar.info("""
         **Pondération optimisée:**
@@ -63,45 +158,22 @@ def show_yolo_dance_page():
         - 📱 Mains MediaPipe: 0.5x (réduit)
         - 📊 Context: 1.0x (standard)
         """)
-        model_path = WEIGHTED_MODEL_PATH
         use_weighted = True
     else:
         st.sidebar.info("📊 Modèle standard sélectionné")
         st.sidebar.warning("Toutes les features ont le même poids")
-        model_path = STANDARD_MODEL_PATH
         use_weighted = False
     
-    # Initialiser le système selon le type
-    @st.cache_resource
-    def init_yolo_dance(model_path, use_weighted):
-        try:
-            if use_weighted and WEIGHTED_AVAILABLE:
-                dance_system = YoloDanceSystemWeighted(custom_classifier_path=model_path)
-                st.success("✅ Modèle YOLO Dance pondéré chargé!")
-            else:
-                dance_system = YoloDanceSystem(custom_classifier_path=model_path)
-                st.success("✅ Modèle YOLO Dance standard chargé!")
-            return dance_system
-        except Exception as e:
-            st.error(f"❌ Erreur lors du chargement: {e}")
-            return None
-    
-    # Initialiser le système de filtres
-    @st.cache_resource
-    def init_filter_system():
-        return GestureFilterSystem()
+    # Variables de session
+    session_prefix = f'api_{selected_model}_'
     
     # Classes disponibles
-    yolo_classes = ['hands_up', 'dab', 'twerk', 'jul', 'neutral', 'crossarm']
-    
-    # Variables de session
-    session_prefix = 'weighted_' if use_weighted else 'standard_'
+    yolo_classes = model_info.get('classes', list(default_thresholds.keys()))
     
     # Initialiser les seuils par classe
     thresholds_key = f'{session_prefix}class_thresholds'
     if thresholds_key not in st.session_state:
-        # Seuils par défaut pour chaque classe
-        st.session_state[thresholds_key] = {cls: 0.7 for cls in yolo_classes}
+        st.session_state[thresholds_key] = default_thresholds.copy()
     
     for key in ['photo_count', 'last_photo_time', 'current_gesture', 'gesture_start_time']:
         session_key = f'{session_prefix}{key}'
@@ -119,12 +191,12 @@ def show_yolo_dance_page():
     PHOTO_COOLDOWN = 2.0
     GESTURE_DURATION_THRESHOLD = 1.0
     
-    st.title("🤖 YOLO DANCE – Modèle Optimisé")
+    st.title("🤖 YOLO DANCE – Modèle API")
     
     if use_weighted:
-        st.write("**🎯 Détection pondérée : Priorité maximale aux poses corporelles**")
+        st.write("**🎯 Détection pondérée via API : Priorité maximale aux poses corporelles**")
     else:
-        st.write("**📊 Détection standard : Toutes features équilibrées**")
+        st.write("**📊 Détection standard via API : Toutes features équilibrées**")
     
     # Paramètres dans la sidebar
     st.sidebar.header("⚙️ Paramètres de détection")
@@ -134,19 +206,11 @@ def show_yolo_dance_page():
     filters_enabled = st.sidebar.checkbox(
         "Activer les filtres", 
         value=True,
-        help="Applique des filtres visuels selon le geste détecté"
+        help="Applique des filtres visuels via l'API selon le geste détecté"
     )
     
     if filters_enabled:
-        filter_opacity = st.sidebar.slider(
-            "Opacité des filtres",
-            min_value=0.1,
-            max_value=1.0,
-            value=0.8,
-            step=0.1,
-            help="Transparence des filtres appliqués"
-        )
-        
+        st.sidebar.success("Filtres activés via API")
         with st.sidebar.expander("🎭 Filtres par geste", expanded=False):
             st.write("🍑 **Twerk** : Pêche sur les hanches")
             st.write("👑 **Hands Up** : Couronne sur la tête")
@@ -154,9 +218,6 @@ def show_yolo_dance_page():
             st.write("✝️ **CrossArm** : Croix lumineuse")
             st.write("🕶️ **Jul** : Lunettes de soleil")
             st.write("😐 **Neutral** : Aucun filtre")
-    
-    else:
-        filter_opacity = 0.8
     
     # Seuil global (pour référence)
     global_threshold = st.sidebar.slider(
@@ -186,41 +247,44 @@ def show_yolo_dance_page():
     }
     
     for group_name, group_classes in gesture_groups.items():
-        with st.sidebar.expander(group_name, expanded=True):
-            for cls in group_classes:
-                current_threshold = st.session_state[thresholds_key][cls]
-                
-                # Emoji pour chaque classe
-                class_emojis = {
-                    'dab': '🕺',
-                    'hands_up': '🙌',
-                    'twerk': '💃',
-                    'jul': '🎤',
-                    'crossarm': '🤷',
-                    'neutral': '😐'
-                }
-                
-                emoji = class_emojis.get(cls, '🎯')
-                
-                new_threshold = st.slider(
-                    f"{emoji} {cls}",
-                    min_value=0.1,
-                    max_value=1.0,
-                    value=current_threshold,
-                    step=0.05,
-                    key=f"threshold_{cls}_{session_prefix}",
-                    help=f"Seuil de confiance pour détecter '{cls}'"
-                )
-                
-                st.session_state[thresholds_key][cls] = new_threshold
-                
-                # Indicateur visuel du niveau
-                if new_threshold >= 0.8:
-                    st.caption("🟢 Très strict")
-                elif new_threshold >= 0.6:
-                    st.caption("🟡 Équilibré")
-                else:
-                    st.caption("🔴 Permissif")
+        # Filtrer les classes qui existent réellement
+        existing_classes = [cls for cls in group_classes if cls in yolo_classes]
+        if existing_classes:
+            with st.sidebar.expander(group_name, expanded=True):
+                for cls in existing_classes:
+                    current_threshold = st.session_state[thresholds_key][cls]
+                    
+                    # Emoji pour chaque classe
+                    class_emojis = {
+                        'dab': '🕺',
+                        'hands_up': '🙌',
+                        'twerk': '💃',
+                        'jul': '🎤',
+                        'crossarm': '🤷',
+                        'neutral': '😐'
+                    }
+                    
+                    emoji = class_emojis.get(cls, '🎯')
+                    
+                    new_threshold = st.slider(
+                        f"{emoji} {cls}",
+                        min_value=0.1,
+                        max_value=1.0,
+                        value=current_threshold,
+                        step=0.05,
+                        key=f"threshold_{cls}_{session_prefix}",
+                        help=f"Seuil de confiance pour détecter '{cls}'"
+                    )
+                    
+                    st.session_state[thresholds_key][cls] = new_threshold
+                    
+                    # Indicateur visuel du niveau
+                    if new_threshold >= 0.8:
+                        st.caption("🟢 Très strict")
+                    elif new_threshold >= 0.6:
+                        st.caption("🟡 Équilibré")
+                    else:
+                        st.caption("🔴 Permissif")
     
     # Bouton reset des seuils
     if st.sidebar.button("🔄 Reset seuils (0.7 partout)"):
@@ -236,16 +300,8 @@ def show_yolo_dance_page():
         step=0.5
     )
     
-    # Mode de détection
-    detection_mode = st.sidebar.selectbox(
-        "Mode de détection",
-        ["Single Person", "Multi Person"],
-        index=0,
-        help="Single Person recommandé pour meilleure précision"
-    )
-    
     def take_yolo_photo(frame, gesture, confidence, model_type):
-        """Prend une photo avec préfixe selon le modèle (SANS FILTRE)"""
+        """Prend une photo avec préfixe selon le modèle (SANS FILTRE via API)"""
         # Exclure neutral des photos
         if gesture == 'neutral':
             return False
@@ -257,7 +313,7 @@ def show_yolo_dance_page():
             st.session_state[f'{session_prefix}photo_count'] += 1
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            prefix = "yolo_weighted" if model_type == "weighted" else "yolo_standard"
+            prefix = f"api_{model_type}"
             filename = f"{prefix}_{gesture}_{confidence:.2f}_{ts}_{st.session_state[f'{session_prefix}photo_count']:03d}.jpg"
             filepath = os.path.join(SAVE_DIR, filename)
             
@@ -266,99 +322,9 @@ def show_yolo_dance_page():
             st.session_state[session_key] = current_time
             
             model_name = "PONDÉRÉ" if model_type == "weighted" else "STANDARD"
-            st.toast(f"📸 {model_name} - {gesture.upper()} détecté ({confidence:.1%}) !")
+            st.toast(f"📸 API {model_name} - {gesture.upper()} détecté ({confidence:.1%}) !")
             return True
         return False
-    
-    def process_yolo_detection(frame, yolo_system, model_type, filter_system):
-        """Traite la détection avec seuils personnalisés et filtres"""
-        if yolo_system is None:
-            return frame, "neutral", False, False, {}, {}, None
-        
-        try:
-            if detection_mode == "Single Person":
-                result = yolo_system.predict(frame)
-            else:
-                result = yolo_system.predict_multi(frame)
-                if 'best_pose' in result:
-                    result = result['best_pose']
-            
-            predicted_gesture = result.get('predicted_class', 'neutral')
-            confidence = result.get('confidence', 0.0)
-            all_predictions = result.get('all_probabilities', {})
-            debug_info = result.get('debug_info', {})
-            
-            # Extraire les keypoints pour les filtres
-            keypoints = None
-            if hasattr(yolo_system, 'pose_detector'):
-                yolo_results = yolo_system.pose_detector(frame)
-                if yolo_results and len(yolo_results) > 0:
-                    result_pose = yolo_results[0]
-                    if result_pose.keypoints is not None and len(result_pose.keypoints.data) > 0:
-                        keypoints = result_pose.keypoints.data[0].cpu().numpy().flatten()
-            
-            # Frame avec visualisation (SANS FILTRE pour sauvegarde)
-            frame_original = frame.copy()
-            frame_with_detection = frame.copy()
-            
-            # Utiliser le seuil spécifique à la classe prédite
-            class_threshold = st.session_state[thresholds_key].get(predicted_gesture, 0.7)
-            
-            # Couleur selon le modèle et la confiance
-            if model_type == "weighted":
-                color = (0, 255, 0) if confidence >= class_threshold else (0, 165, 255)  # Vert ou Orange
-                model_text = f"PONDÉRÉ: {predicted_gesture.upper()}"
-            else:
-                color = (255, 0, 0) if confidence >= class_threshold else (0, 0, 255)  # Rouge ou Bleu
-                model_text = f"STANDARD: {predicted_gesture.upper()}"
-            
-            # Dessiner l'interface
-            cv2.rectangle(frame_with_detection, (10, 10), (frame.shape[1]-10, 140), color, 3)
-            cv2.putText(frame_with_detection, model_text, (20, 40), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-            cv2.putText(frame_with_detection, f"Conf: {confidence:.1%}", (20, 70), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            cv2.putText(frame_with_detection, f"Seuil {predicted_gesture}: {class_threshold:.1%}", (20, 100), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-            
-            # Affichage de la pondération si disponible
-            if model_type == "weighted" and debug_info:
-                pose_weight = debug_info.get('pose_features_weight', 'N/A')
-                hand_weight = debug_info.get('hand_features_weight', 'N/A')
-                cv2.putText(frame_with_detection, f"Pose:{pose_weight}x Hand:{hand_weight}x", (20, 130), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            
-            # Logique de détection avec seuil personnalisé
-            gesture_detected = confidence >= class_threshold
-            
-            # APPLIQUER LES FILTRES sur frame_with_detection (pour affichage)
-            if filters_enabled and gesture_detected and predicted_gesture != 'neutral':
-                filter_system.set_opacity(filter_opacity)
-                frame_with_detection = filter_system.apply_filter_for_gesture(
-                    frame_with_detection, predicted_gesture, keypoints
-                )
-            
-            # Gestion de continuité
-            current_time = time.time()
-            photo_taken = False
-            current_gesture_key = f'{session_prefix}current_gesture'
-            gesture_start_key = f'{session_prefix}gesture_start_time'
-            
-            if gesture_detected and predicted_gesture == st.session_state[current_gesture_key]:
-                if current_time - st.session_state[gesture_start_key] > GESTURE_DURATION_THRESHOLD:
-                    # IMPORTANT: Utiliser frame_original (sans filtre) pour la photo
-                    photo_taken = take_yolo_photo(frame_original, predicted_gesture, confidence, model_type)
-            elif gesture_detected and predicted_gesture != st.session_state[current_gesture_key]:
-                st.session_state[current_gesture_key] = predicted_gesture
-                st.session_state[gesture_start_key] = current_time
-            elif not gesture_detected:
-                st.session_state[current_gesture_key] = "neutral"
-            
-            return frame_with_detection, predicted_gesture, gesture_detected, photo_taken, all_predictions, debug_info, keypoints
-            
-        except Exception as e:
-            st.error(f"Erreur lors de la prédiction: {e}")
-            return frame, "neutral", False, False, {}, {}, None
     
     # Interface utilisateur principale
     col1, col2, col3, col4 = st.columns(4)
@@ -385,40 +351,31 @@ def show_yolo_dance_page():
     
     # Informations sur le modèle
     model_type_display = "Pondéré 🎯" if use_weighted else "Standard 📊"
-    st.info(f"🤖 **Modèle:** {model_type_display} | **Mode:** {detection_mode} | **Classes:** {len(yolo_classes)}")
+    st.info(f"🔗 **API:** {api_url} | **Modèle:** {model_type_display} | **Filtres:** {'✅' if filters_enabled else '❌'}")
     
     # Section caméra
-    st.header("🎥 Caméra YOLO Dance")
+    st.header("🎥 Caméra YOLO Dance (API)")
     
-    yolo_system = init_yolo_dance(model_path, use_weighted)
-    filter_system = init_filter_system()
-    model_type = "weighted" if use_weighted else "standard"
-    
-    if st.button(f"🤖 Lancer {model_type_display}", type="primary", key="start_yolo"):
-        if yolo_system is None:
-            st.error("❌ Modèle non chargé. Impossible de démarrer.")
-            st.stop()
-        
+    if st.button(f"🤖 Lancer {model_type_display} via API", type="primary", key="start_yolo_api"):
         # Conteneurs d'affichage
         video_container = st.empty()
         status_container = st.empty()
+        api_info_container = st.empty()
         predictions_container = st.empty()
-        debug_container = st.empty()
         
         # Bouton d'arrêt
-        stop_button = st.button("🛑 Arrêter la caméra", key="stop_yolo")
+        stop_button = st.button("🛑 Arrêter la caméra", key="stop_yolo_api")
         
         # Initialiser la caméra
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             st.error("❌ Impossible d'accéder à la caméra")
         else:
-            success_msg = f"✅ Caméra active - Modèle {model_type_display} prêt"
-            if use_weighted:
-                success_msg += " (Pose prioritaire)"
+            success_msg = f"✅ Caméra active - API {model_type_display} prêt"
             st.success(success_msg)
             
             frame_count = 0
+            api_call_count = 0
             fps_start_time = time.time()
             fps = 0
             
@@ -430,79 +387,115 @@ def show_yolo_dance_page():
                 
                 # Miroir pour l'UX
                 frame = cv2.flip(frame, 1)
+                original_frame = frame.copy()
                 
-                # Traitement avec le modèle sélectionné
-                processed_frame, detected_gesture, gesture_detected, photo_taken, all_predictions, debug_info, keypoints = process_yolo_detection(
-                    frame, yolo_system, model_type, filter_system
-                )
-                
-                # Effet flash pour les photos
-                if photo_taken:
-                    overlay = np.ones_like(processed_frame) * 255
-                    processed_frame = cv2.addWeighted(processed_frame, 0.6, overlay, 0.4, 0)
-                
-                # Ajouter le FPS et device info
-                device_info = "GPU" if torch.cuda.is_available() else "CPU"
-                cv2.putText(processed_frame, f"FPS: {fps:.1f} | {device_info}", 
-                           (frame.shape[1]-200, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                
-                # Affichage vidéo
-                video_container.image(cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB), channels="RGB")
-                
-                # Affichage du statut avec seuil utilisé
-                status_icon = "✅" if gesture_detected else "❌"
-                confidence_val = all_predictions.get(detected_gesture, 0.0) if all_predictions else 0.0
-                used_threshold = st.session_state[thresholds_key].get(detected_gesture, 0.7)
-                
-                status_text = f"**Statut {model_type_display}:** {detected_gesture} {status_icon}"
-                if confidence_val > 0:
-                    status_text += f" | Confiance: {confidence_val:.1%} (seuil: {used_threshold:.1%})"
-                
-                if use_weighted and debug_info:
-                    hands_detected = debug_info.get('hands_detected', 0)
-                    status_text += f" | Mains: {hands_detected}"
-                
-                status_container.write(status_text)
-                
-                # Affichage des prédictions avec indication des seuils
-                if all_predictions:
-                    sorted_predictions = sorted(all_predictions.items(), key=lambda x: x[1], reverse=True)
-                    top_5 = sorted_predictions[:5]
+                try:
+                    # Appel API pour détection
+                    success, result = api_client.detect_gesture(
+                        frame,
+                        model_type=selected_model,
+                        apply_filters=filters_enabled,
+                        custom_thresholds=st.session_state[thresholds_key],
+                        return_image=filters_enabled
+                    )
                     
-                    pred_text = f"**Top 5 prédictions {model_type_display}:**\n"
-                    for i, (gesture, conf) in enumerate(top_5):
-                        gesture_threshold = st.session_state[thresholds_key].get(gesture, 0.7)
+                    api_call_count += 1
+                    
+                    if success:
+                        detected = result.get('detected', False)
+                        predicted_class = result.get('predicted_class', 'neutral')
+                        confidence = result.get('confidence', 0.0)
+                        all_probabilities = result.get('all_probabilities', {})
+                        threshold_used = result.get('threshold_used', 0.7)
+                        debug_info = result.get('debug_info', {})
                         
-                        if conf >= gesture_threshold:
-                            status_emoji = "✅"
-                        elif conf >= gesture_threshold - 0.1:
-                            status_emoji = "⚠️"
+                        # Frame à afficher
+                        if filters_enabled and 'annotated_image_array' in result:
+                            display_frame = result['annotated_image_array']
                         else:
-                            status_emoji = "❌"
+                            display_frame = frame.copy()
+                            # Ajouter annotations basiques
+                            color = (0, 255, 0) if detected else (0, 0, 255)
+                            cv2.putText(display_frame, f"API {selected_model.upper()}: {predicted_class}: {confidence:.1%}", 
+                                       (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
                         
-                        if use_weighted:
-                            # Indiquer quels gestes sont favorisés par la pondération
-                            if gesture in ['hands_up', 'crossarm']:  # Gestes bien détectés par pose
-                                type_emoji = "🎯"
-                            elif gesture in ['dab']:  # Gestes nécessitant les mains
-                                type_emoji = "👋"
-                            else:
-                                type_emoji = "📊"
-                        else:
-                            type_emoji = "📊"
+                        # Gestion de continuité
+                        current_time = time.time()
+                        photo_taken = False
+                        current_gesture_key = f'{session_prefix}current_gesture'
+                        gesture_start_key = f'{session_prefix}gesture_start_time'
                         
-                        pred_text += f"{status_emoji} {type_emoji} {gesture}: {conf:.1%} (seuil: {gesture_threshold:.1%})\n"
-                    predictions_container.write(pred_text)
+                        if detected and predicted_class == st.session_state[current_gesture_key]:
+                            if current_time - st.session_state[gesture_start_key] > GESTURE_DURATION_THRESHOLD:
+                                # IMPORTANT: Utiliser original_frame (sans filtre) pour la photo
+                                photo_taken = take_yolo_photo(original_frame, predicted_class, confidence, selected_model)
+                        elif detected and predicted_class != st.session_state[current_gesture_key]:
+                            st.session_state[current_gesture_key] = predicted_class
+                            st.session_state[gesture_start_key] = current_time
+                        elif not detected:
+                            st.session_state[current_gesture_key] = "neutral"
+                        
+                        # Effet flash pour les photos
+                        if photo_taken:
+                            overlay = np.ones_like(display_frame) * 255
+                            display_frame = cv2.addWeighted(display_frame, 0.6, overlay, 0.4, 0)
+                        
+                        # Ajouter le FPS et device info
+                        cv2.putText(display_frame, f"FPS: {fps:.1f} | API calls: {api_call_count}", 
+                                   (frame.shape[1]-250, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        
+                        # Affichage vidéo
+                        video_container.image(cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB), channels="RGB")
+                        
+                        # Affichage du statut avec seuil utilisé
+                        status_icon = "✅" if detected else "❌"
+                        status_text = f"**Statut API {model_type_display}:** {predicted_class} {status_icon}"
+                        if confidence > 0:
+                            status_text += f" | Confiance: {confidence:.1%} (seuil: {threshold_used:.1%})"
+                        status_container.write(status_text)
+                        
+                        # Informations API
+                        api_info_text = f"**API Info:** Modèle: {result.get('model_used', 'N/A')} | Calls: {api_call_count}"
+                        if debug_info and selected_model == "weighted":
+                            pose_weight = debug_info.get('pose_features_weight', 'N/A')
+                            hand_weight = debug_info.get('hand_features_weight', 'N/A')
+                            api_info_text += f" | Pondération: Pose {pose_weight}x, Mains {hand_weight}x"
+                        api_info_container.write(api_info_text)
+                        
+                        # Affichage des prédictions avec indication des seuils
+                        if all_probabilities:
+                            sorted_predictions = sorted(all_probabilities.items(), key=lambda x: x[1], reverse=True)
+                            top_5 = sorted_predictions[:5]
+                            
+                            pred_text = f"**Top 5 prédictions API {model_type_display}:**\n"
+                            for i, (gesture, conf) in enumerate(top_5):
+                                gesture_threshold = st.session_state[thresholds_key].get(gesture, 0.7)
+                                
+                                if conf >= gesture_threshold:
+                                    status_emoji = "✅"
+                                elif conf >= gesture_threshold - 0.1:
+                                    status_emoji = "⚠️"
+                                else:
+                                    status_emoji = "❌"
+                                
+                                pred_text += f"{status_emoji} {gesture}: {conf:.1%} (seuil: {gesture_threshold:.1%})\n"
+                            predictions_container.write(pred_text)
+                    
+                    else:
+                        # Erreur API
+                        error_msg = result.get('error', 'Erreur inconnue')
+                        display_frame = frame.copy()
+                        cv2.putText(display_frame, f"API ERROR: {error_msg[:50]}", 
+                                   (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        video_container.image(cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB), channels="RGB")
+                        status_container.error(f"Erreur API: {error_msg}")
                 
-                # Debug info pour modèle pondéré
-                if use_weighted and debug_info:
-                    debug_text = "**🎯 Info pondération:**\n"
-                    debug_text += f"- Pose weight: {debug_info.get('pose_features_weight', 'N/A')}x\n"
-                    debug_text += f"- Hand weight: {debug_info.get('hand_features_weight', 'N/A')}x\n"
-                    debug_text += f"- Context weight: {debug_info.get('context_features_weight', 'N/A')}x\n"
-                    debug_text += f"- Pose features: {debug_info.get('pose_features_size', 'N/A')}\n"
-                    debug_text += f"- Hand features: {debug_info.get('hand_features_size', 'N/A')}\n"
-                    debug_container.write(debug_text)
+                except Exception as e:
+                    st.error(f"Erreur communication API: {e}")
+                    display_frame = frame.copy()
+                    cv2.putText(display_frame, "CONNECTION ERROR", 
+                               (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    video_container.image(cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB), channels="RGB")
                 
                 # Calcul FPS
                 frame_count += 1
@@ -510,21 +503,19 @@ def show_yolo_dance_page():
                     fps = 10 / (time.time() - fps_start_time)
                     fps_start_time = time.time()
                 
-                time.sleep(0.03)  # Limite FPS
+                # Limiter FPS pour éviter la surcharge API
+                time.sleep(0.1)  # 10 FPS max pour éviter la surcharge
             
             cap.release()
             st.success(f"🎥 Caméra {model_type_display} fermée")
     
     # Section photos récentes avec tri par modèle
     if st.session_state[f'{session_prefix}photo_count'] > 0:
-        st.header(f"📸 Photos {model_type_display}")
+        st.header(f"📸 Photos API {model_type_display}")
         
         if os.path.exists(SAVE_DIR):
             # Filtrer selon le type de modèle
-            if use_weighted:
-                pattern = "yolo_weighted_"
-            else:
-                pattern = "yolo_standard_"
+            pattern = f"api_{selected_model}_"
             
             image_files = [f for f in os.listdir(SAVE_DIR) 
                           if f.endswith('.jpg') and f.startswith(pattern)]
@@ -539,67 +530,28 @@ def show_yolo_dance_page():
                         # Extraire des infos du nom de fichier
                         parts = img_file.split('_')
                         if len(parts) >= 4:
+                            model_type = parts[1]
                             gesture = parts[2]
                             confidence = parts[3]
                             used_threshold = st.session_state[thresholds_key].get(gesture, 0.7)
-                            caption = f"{gesture} (conf: {confidence}, seuil: {used_threshold:.1%})"
+                            caption = f"API {model_type} - {gesture} (conf: {confidence}, seuil: {used_threshold:.1%})"
                         else:
                             caption = img_file
                         
                         st.image(img_path, caption=caption, use_column_width=True)
             else:
-                st.info(f"Aucune photo prise avec le modèle {model_type_display}")
-    
-    # Section statistiques et comparaison
-    st.header(f"📊 Statistiques {model_type_display}")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric(
-            f"Photos {model_type_display}", 
-            st.session_state[f'{session_prefix}photo_count'],
-            help=f"Nombre total de photos avec modèle {model_type_display}"
-        )
-    
-    with col2:
-        device_info = "GPU (CUDA)" if torch.cuda.is_available() else "CPU"
-        st.metric(
-            "Device", 
-            device_info,
-            help="Processeur utilisé pour l'inférence"
-        )
-    
-    with col3:
-        model_size = "Pondéré" if use_weighted else "Standard"
-        st.metric(
-            "Type modèle",
-            model_size,
-            help="Architecture du modèle utilisé"
-        )
-    
-    # Section de comparaison des modèles
-    if WEIGHTED_AVAILABLE:
-        with st.expander("🔍 Comparaison des modèles"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**🎯 Modèle Pondéré**")
-                st.write("✅ Pose YOLO: priorité maximale (3.0x)")
-                st.write("✅ Meilleure précision sur gestes corporels")
-                st.write("✅ Moins sensible au bruit des mains")
-                st.write("✅ Recommandé: dab, hands_up, crossarm")
-                st.write("❌ Moins précis sur gestes manuels fins")
-            
-            with col2:
-                st.write("**📊 Modèle Standard**")
-                st.write("📊 Toutes features équilibrées")
-                st.write("📊 Polyvalent sur tous types de gestes")
-                st.write("📊 Sensible aux détails des mains")
-                st.write("❌ Plus de faux positifs possibles")
-                st.write("❌ Peut être perturbé par le bruit")
+                st.info(f"Aucune photo prise avec le modèle API {model_type_display}")
     
     # Conseils d'utilisation selon le modèle
-    with st.expander("💡 Conseils d'utilisation, seuils et filtres"):
+    with st.expander("💡 Conseils d'utilisation, seuils et API"):
+        st.write("**🔗 Architecture API :**")
+        st.write("""
+        - **🚀 Performance** : Modèles chargés une fois côté serveur
+        - **🎨 Filtres** : Traitement des filtres visuels via API
+        - **📊 Scalabilité** : Plusieurs clients peuvent utiliser la même API
+        - **🔧 Maintenance** : Mise à jour des modèles centralisée
+        """)
+        
         st.write("**🎛️ Configuration des seuils par classe :**")
         st.write("""
         - **Seuil élevé (0.8+)** : Détection très stricte, moins de faux positifs
@@ -613,7 +565,7 @@ def show_yolo_dance_page():
         - **Neutral** : Seuil bas (0.4-0.6) - état par défaut (AUCUNE PHOTO)
         """)
         
-        st.write("**🎨 Système de filtres visuels :**")
+        st.write("**🎨 Système de filtres visuels (via API) :**")
         st.write("""
         - **🍑 Twerk** : Pêche positionnée automatiquement sur les hanches
         - **👑 Hands Up** : Couronne royale au-dessus de la tête
@@ -622,50 +574,17 @@ def show_yolo_dance_page():
         - **🕶️ Jul** : Lunettes de soleil sur les yeux
         - **😐 Neutral** : Aucun filtre appliqué
         
-        ⚠️ **Important** : Les filtres ne sont appliqués QUE sur l'affichage en direct.
+        ⚠️ **Important** : Les filtres sont appliqués côté API.
         Les photos sauvegardées sont SANS filtre (image originale).
         """)
         
-        if use_weighted:
-            st.write("""
-            **🎯 Optimisation pour modèle pondéré :**
-            - 💃 Privilégiez les gestes corporels marqués (dab, mains levées)
-            - 🎯 Les poses YOLO sont prioritaires - soignez votre posture
-            - 📏 Restez bien visible dans le cadre (corps entier)
-            - ⚡ Réactivité améliorée sur les gestes de pose
-            - 🎭 Idéal pour: dab, hands_up, crossarm, twerk
-            """)
-        else:
-            st.write("""
-            **📊 Utilisation modèle standard :**
-            - 👋 Tous types de gestes équilibrés
-            - 🤲 Attention aux détails des mains
-            - 🎯 Polyvalent mais potentiellement plus sensible au bruit
-            - 💡 Bon éclairage recommandé pour les mains
-            - 🎭 Adapté à: tous gestes, y compris ceux nécessitant les mains
-            """)
-        
+        st.write("**🔧 Avantages de l'API :**")
         st.write("""
-        **Conseils généraux :**
-        - 🎯 Éclairage uniforme et suffisant
-        - 📏 Distance 1.5-2m de la caméra
-        - ⏱️ Maintenez la pose 1-2 secondes
-        - 🎬 Arrière-plan dégagé et contrasté
-        - 🎨 Activez les filtres pour plus de fun !
+        - **Performance** : Pas de rechargement de modèles
+        - **Flexibilité** : Changement de modèle sans redémarrage
+        - **Monitoring** : Logs centralisés des prédictions
+        - **Multi-clients** : Partage des ressources
         """)
-        
-        # Section de test des filtres
-        st.write("**🧪 Test des filtres (aperçu) :**")
-        col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1:
-            if st.button("🍑 Aperçu Twerk"):
-                st.write("Pêche sur les hanches")
-        with col_f2:
-            if st.button("👑 Aperçu Hands Up"):
-                st.write("Couronne royale")
-        with col_f3:
-            if st.button("⚡ Aperçu Dab"):
-                st.write("Rayon lumineux")
 
 # Point d'entrée principal
 if __name__ == "__main__":

@@ -7,11 +7,6 @@ class User(Base):
     __tablename__ = "users"
     
     id = Column(Integer, primary_key=True, index=True)
-<<<<<<< HEAD
-    username = Column(String, unique=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-=======
     username = Column(String(50), unique=True, index=True, nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
@@ -28,4 +23,3 @@ class PredictionLog(Base):
     image_path = Column(String(255), nullable=True)
     model_used = Column(String(50), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
->>>>>>> 3c385f1dd1dfb5ebf6ae0201381c6982a3550f38

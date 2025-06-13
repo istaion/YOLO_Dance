@@ -1,67 +1,116 @@
 # api/main.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-<<<<<<< HEAD
-from routes import inference, log
-import random
-=======
 from fastapi.responses import JSONResponse
->>>>>>> 3c385f1dd1dfb5ebf6ae0201381c6982a3550f38
+from routes import inference, log
+from model_loader import YoloDanceSystemWeighted
+from utils import GestureFilterSystem
+import uvicorn
+import numpy as np
+from typing import Dict, Optional
+import cv2
+import base64
+import io
+from PIL import Image
 import uvicorn
 import os
 import sys
 
-<<<<<<< HEAD
-
-
-
-app = FastAPI(title="YOLO_Dance")
-=======
 # Ajouter le répertoire courant au path pour les imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
->>>>>>> 3c385f1dd1dfb5ebf6ae0201381c6982a3550f38
 
 # Initialisation de la base de données au démarrage
 from contextlib import asynccontextmanager
+
+# Ajouter le répertoire courant au path pour les imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Essayer d'importer les modules selon la structure disponible
+try:
+    # Si vous avez les modules dans api/
+    from model_loader import YoloDanceSystemWeighted
+    from utils import GestureFilterSystem
+except ImportError:
+    try:
+        # Si les modules sont dans le dossier parent
+        sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+        from scripts.yolo_pipeline.yolo_model_weighted import YoloDanceSystemWeighted
+        from filter_system import GestureFilterSystem
+    except ImportError:
+        print("⚠️ Impossible d'importer les modèles YOLO. Fonctionnement en mode dégradé.")
+        YoloDanceSystemWeighted = None
+        GestureFilterSystem = None
+
+# Variables globales pour les modèles (chargés une seule fois)
+yolo_system_weighted = None
+filter_system = None
+
+# Configuration des modèles
+MODEL_CONFIGS = {
+    "weighted": {
+        "path": "../models/final_weighted_model.pth", 
+        "description": "Modèle YOLO pondéré (pose prioritaire)"
+    }
+}
+
+# Seuils par défaut
+DEFAULT_THRESHOLDS = {
+    'hands_up': 0.7,
+    'dab': 0.7,
+    'twerk': 0.6,
+    'jul': 0.6,
+    'crossarm': 0.6,
+    'neutral': 0.4
+}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestionnaire d'événements de cycle de vie de l'application"""
     # Événements de démarrage
-    print("🚀 Démarrage de l'API Dance Detection...")
+    print("🚀 Démarrage de l'API YOLO Dance...")
     
-    # Vérifier que la base de données existe
+    global yolo_system_weighted, filter_system
+    
+    # Initialiser les modèles
+    if YoloDanceSystemWeighted:
+        try:
+            if os.path.exists(MODEL_CONFIGS["weighted"]["path"]):
+                yolo_system_weighted = YoloDanceSystemWeighted(
+                    custom_classifier_path=MODEL_CONFIGS["weighted"]["path"]
+                )
+                print("✅ Modèle pondéré chargé")
+            else:
+                print("⚠️ Modèle pondéré non trouvé, utilisation modèle non-entraîné")
+                yolo_system_weighted = YoloDanceSystemWeighted()
+        except Exception as e:
+            print(f"❌ Erreur chargement modèle pondéré: {e}")
+            yolo_system_weighted = None
+    
+    # Charger le système de filtres
+    if GestureFilterSystem:
+        try:
+            filter_system = GestureFilterSystem()
+            print("✅ Système de filtres chargé")
+        except Exception as e:
+            print(f"❌ Erreur chargement filtres: {e}")
+            filter_system = None
+    
+    # Essayer d'initialiser la base de données si elle existe
     try:
         from database import engine, Base
-        from models import User, PredictionLog
-        
-        # Créer les tables si elles n'existent pas
         Base.metadata.create_all(bind=engine)
         print("✅ Base de données initialisée")
-        
-        # Vérifier la connexion
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            result = conn.execute(text("SELECT COUNT(*) FROM users"))
-            user_count = result.scalar()
-            print(f"📊 Nombre d'utilisateurs: {user_count}")
-            
+    except ImportError:
+        print("ℹ️ Pas de base de données configurée")
     except Exception as e:
-        print(f"❌ Erreur lors de l'initialisation de la DB: {e}")
-        raise
+        print(f"⚠️ Erreur base de données: {e}")
     
-    # Vérifier que le modèle YOLO est disponible
-    try:
-        from pose_detection_model import PoseDetector
-        detector = PoseDetector(model_path="yolov8n-pose.pt")
-        print("✅ Modèle YOLO initialisé")
-    except Exception as e:
-        print(f"⚠️ Attention: Modèle YOLO non disponible: {e}")
+    print("🎉 Initialisation terminée!")
     
     yield  # L'application démarre ici
     
     # Événements d'arrêt
-    print("🛑 Arrêt de l'API Dance Detection...")
+    print("🛑 Arrêt de l'API YOLO Dance...")
 
 app = FastAPI(
     title="Dance Detection API",
@@ -80,6 +129,82 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Variables globales pour les modèles (chargés une seule fois)
+yolo_system_standard = None
+yolo_system_weighted = None
+filter_system = None
+
+# Configuration des modèles
+MODEL_CONFIGS = {
+    "standard": {
+        "path": "../models/best_model.pth",
+        "description": "Modèle YOLO standard équilibré"
+    },
+    "weighted": {
+        "path": "../models/final_weighted_model.pth", 
+        "description": "Modèle YOLO pondéré (pose prioritaire)"
+    }
+}
+
+# Seuils par défaut
+DEFAULT_THRESHOLDS = {
+    'hands_up': 0.7,
+    'dab': 0.7,
+    'twerk': 0.6,
+    'jul': 0.6,
+    'crossarm': 0.6,
+    'neutral': 0.4
+}
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialise les modèles au démarrage de l'API"""
+    global yolo_system_standard, yolo_system_weighted, filter_system
+    
+    print("🚀 Initialisation des modèles YOLO Dance...")
+    
+    # Charger le modèle pondéré
+    try:
+        if os.path.exists(MODEL_CONFIGS["weighted"]["path"]):
+            yolo_system_weighted = YoloDanceSystemWeighted(
+                custom_classifier_path=MODEL_CONFIGS["weighted"]["path"]
+            )
+            print("✅ Modèle pondéré chargé")
+        else:
+            print("⚠️ Modèle pondéré non trouvé, utilisation modèle non-entraîné")
+            yolo_system_weighted = YoloDanceSystemWeighted()
+    except Exception as e:
+        print(f"❌ Erreur chargement modèle pondéré: {e}")
+        yolo_system_weighted = None
+    
+    # Charger le système de filtres
+    try:
+        filter_system = GestureFilterSystem()
+        print("✅ Système de filtres chargé")
+    except Exception as e:
+        print(f"❌ Erreur chargement filtres: {e}")
+        filter_system = None
+    
+    print("🎉 Initialisation terminée!")
+
+def get_model(model_type: str = "weighted"):
+    """Récupère le modèle approprié"""
+    if model_type == "weighted" and yolo_system_weighted is not None:
+        return yolo_system_weighted
+    elif model_type == "standard" and yolo_system_standard is not None:
+        return yolo_system_standard
+    elif yolo_system_standard is not None:
+        return yolo_system_standard
+    else:
+        raise HTTPException(status_code=503, detail="Aucun modèle disponible")
+
+def encode_image_to_base64(image: np.ndarray) -> str:
+    """Convertit une image OpenCV en base64"""
+    _, buffer = cv2.imencode('.jpg', image)
+    img_base64 = base64.b64encode(buffer).decode('utf-8')
+    return img_base64
+
 # Ajouter les routes
 app.include_router(inference.router, prefix="/api")
 app.include_router(log.router, prefix="/log")
@@ -166,6 +291,227 @@ async def debug_routes():
         "total_routes": len(routes),
         "routes": sorted(routes, key=lambda x: x['path'])
     }
+
+
+@app.get("/models/")
+async def list_models():
+    """Liste les modèles disponibles"""
+    models = {}
+    
+    if yolo_system_standard:
+        models["standard"] = {
+            **MODEL_CONFIGS["standard"],
+            "available": True,
+            "classes": yolo_system_standard.classes
+        }
+    
+    if yolo_system_weighted:
+        models["weighted"] = {
+            **MODEL_CONFIGS["weighted"], 
+            "available": True,
+            "classes": yolo_system_weighted.classes,
+            "weights": {
+                "pose": 3.0,
+                "hands": 0.5, 
+                "context": 1.0
+            }
+        }
+    print(f"models : {models}")
+    return {"models": models, "default_thresholds": DEFAULT_THRESHOLDS}
+
+@app.post("/detect/")
+async def detect(file: UploadFile = File(...)):
+    """
+    Détection de gestes simple (compatibilité avec l'ancien endpoint)
+    """
+    try:
+        # Lire et décoder l'image
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            raise HTTPException(status_code=400, detail="Image invalide")
+        
+        # Utiliser le modèle par défaut
+        model = get_model("weighted" if yolo_system_weighted else "standard")
+        
+        # Prédiction
+        result = model.predict(img)
+        
+        predicted_gesture = result.get('predicted_class', 'neutral')
+        confidence = result.get('confidence', 0.0)
+        
+        # Seuil simple pour compatibilité
+        threshold = DEFAULT_THRESHOLDS.get(predicted_gesture, 0.7)
+        detected = confidence >= threshold and predicted_gesture != 'neutral'
+        
+        return {
+            "detected": detected,
+            "gesture": predicted_gesture,
+            "confidence": float(confidence),
+            "threshold_used": threshold
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur de traitement: {str(e)}")
+
+@app.post("/detect_advanced/")
+async def detect_advanced(
+    file: UploadFile = File(...),
+    model_type: str = "weighted",
+    apply_filters: bool = False,
+    custom_thresholds: Optional[Dict[str, float]] = None,
+    return_image: bool = False,
+    return_debug: bool = False
+):
+    """
+    Détection de gestes avancée avec options complètes
+    
+    Args:
+        file: Image à analyser
+        model_type: "weighted" ou "standard"
+        apply_filters: Appliquer les filtres visuels
+        custom_thresholds: Seuils personnalisés par classe
+        return_image: Retourner l'image avec annotations
+        return_debug: Inclure les informations de debug
+    """
+    try:
+        # Lire et décoder l'image
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            raise HTTPException(status_code=400, detail="Image invalide")
+        
+        # Sélectionner le modèle
+        model = get_model(model_type)
+        
+        # Prédiction
+        result = model.predict(img)
+        
+        predicted_gesture = result.get('predicted_class', 'neutral')
+        confidence = result.get('confidence', 0.0)
+        all_probabilities = result.get('all_probabilities', {})
+        debug_info = result.get('debug_info', {})
+        
+        # Utiliser seuils personnalisés ou par défaut
+        thresholds = custom_thresholds if custom_thresholds else DEFAULT_THRESHOLDS
+        threshold = thresholds.get(predicted_gesture, 0.7)
+        
+        # Détection
+        gesture_detected = confidence >= threshold and predicted_gesture != 'neutral'
+        
+        # Réponse de base
+        response = {
+            "detected": gesture_detected,
+            "predicted_class": predicted_gesture,
+            "confidence": float(confidence),
+            "threshold_used": threshold,
+            "model_used": model_type,
+            "all_probabilities": {k: float(v) for k, v in all_probabilities.items()}
+        }
+        
+        # Ajouter debug si demandé
+        if return_debug:
+            response["debug_info"] = debug_info
+            response["image_shape"] = img.shape
+            response["thresholds_config"] = thresholds
+        
+        # Traiter l'image si demandé
+        if return_image or apply_filters:
+            processed_img = img.copy()
+            
+            # Ajouter annotations de base
+            color = (0, 255, 0) if gesture_detected else (0, 0, 255)
+            cv2.putText(processed_img, f"{predicted_gesture}: {confidence:.2f}", 
+                       (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
+            
+            # Appliquer filtres si demandé et disponible
+            if apply_filters and filter_system and gesture_detected and predicted_gesture != 'neutral':
+                # Extraire keypoints pour les filtres
+                keypoints = None
+                if hasattr(model, 'pose_detector'):
+                    yolo_results = model.pose_detector(img)
+                    if yolo_results and len(yolo_results) > 0:
+                        result_pose = yolo_results[0]
+                        if result_pose.keypoints is not None and len(result_pose.keypoints.data) > 0:
+                            keypoints = result_pose.keypoints.data[0].cpu().numpy().flatten()
+                
+                processed_img = filter_system.apply_filter_for_gesture(
+                    processed_img, predicted_gesture, keypoints
+                )
+            
+            if return_image:
+                # Encoder l'image en base64
+                img_base64 = encode_image_to_base64(processed_img)
+                response["annotated_image"] = img_base64
+        
+        return response
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur de traitement: {str(e)}")
+
+@app.post("/batch_detect/")
+async def batch_detect(
+    files: list[UploadFile] = File(...),
+    model_type: str = "weighted",
+    custom_thresholds: Optional[Dict[str, float]] = None
+):
+    """
+    Détection de gestes en lot pour plusieurs images
+    """
+    if len(files) > 20:  # Limite pour éviter la surcharge
+        raise HTTPException(status_code=400, detail="Maximum 20 images par batch")
+    
+    results = []
+    model = get_model(model_type)
+    thresholds = custom_thresholds if custom_thresholds else DEFAULT_THRESHOLDS
+    
+    for i, file in enumerate(files):
+        try:
+            contents = await file.read()
+            nparr = np.frombuffer(contents, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                results.append({
+                    "index": i,
+                    "filename": file.filename,
+                    "error": "Image invalide"
+                })
+                continue
+            
+            result = model.predict(img)
+            predicted_gesture = result.get('predicted_class', 'neutral')
+            confidence = result.get('confidence', 0.0)
+            threshold = thresholds.get(predicted_gesture, 0.7)
+            detected = confidence >= threshold and predicted_gesture != 'neutral'
+            
+            results.append({
+                "index": i,
+                "filename": file.filename,
+                "detected": detected,
+                "predicted_class": predicted_gesture,
+                "confidence": float(confidence),
+                "threshold_used": threshold
+            })
+            
+        except Exception as e:
+            results.append({
+                "index": i,
+                "filename": file.filename,
+                "error": str(e)
+            })
+    
+    return {
+        "batch_results": results,
+        "model_used": model_type,
+        "total_processed": len(results),
+        "total_detected": sum(1 for r in results if r.get('detected', False))
+    }
+
 
 # Supprimer les anciens événements dépréciés
 # @app.on_event("startup") et @app.on_event("shutdown") sont maintenant dans lifespan
