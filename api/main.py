@@ -1,5 +1,5 @@
 # api/main.py
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from routes import inference, log
@@ -35,7 +35,7 @@ except ImportError:
         # Si les modules sont dans le dossier parent
         sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
         from scripts.yolo_pipeline.yolo_model_weighted import YoloDanceSystemWeighted
-        from filter_system import GestureFilterSystem
+        from utils import GestureFilterSystem
     except ImportError:
         print("⚠️ Impossible d'importer les modèles YOLO. Fonctionnement en mode dégradé.")
         YoloDanceSystemWeighted = None
@@ -359,24 +359,28 @@ async def detect(file: UploadFile = File(...)):
 @app.post("/detect_advanced/")
 async def detect_advanced(
     file: UploadFile = File(...),
-    model_type: str = "weighted",
-    apply_filters: bool = False,
-    custom_thresholds: Optional[Dict[str, float]] = None,
-    return_image: bool = False,
-    return_debug: bool = False
+    model_type: str = Form("weighted"),
+    apply_filters: str = Form("false"),
+    custom_thresholds: Optional[str] = Form(None),
+    return_image: str = Form("false"),
+    return_debug: str = Form("false")
 ):
     """
     Détection de gestes avancée avec options complètes
-    
-    Args:
-        file: Image à analyser
-        model_type: "weighted" ou "standard"
-        apply_filters: Appliquer les filtres visuels
-        custom_thresholds: Seuils personnalisés par classe
-        return_image: Retourner l'image avec annotations
-        return_debug: Inclure les informations de debug
     """
     try:
+        # Debug: afficher tous les paramètres reçus
+        print(f"[API] Paramètres reçus:")
+        print(f"  - model_type: {model_type}")
+        print(f"  - apply_filters: {apply_filters}")
+        print(f"  - custom_thresholds: {custom_thresholds}")
+        print(f"  - return_image: {return_image}")
+        print(f"  - return_debug: {return_debug}")
+        # Convertir les paramètres string en boolean
+        apply_filters_bool = apply_filters.lower() in ["true", "1", "yes"]
+        return_image_bool = return_image.lower() in ["true", "1", "yes"]
+        return_debug_bool = return_debug.lower() in ["true", "1", "yes"]
+        
         # Lire et décoder l'image
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
@@ -397,11 +401,28 @@ async def detect_advanced(
         debug_info = result.get('debug_info', {})
         
         # Utiliser seuils personnalisés ou par défaut
-        thresholds = custom_thresholds if custom_thresholds else DEFAULT_THRESHOLDS
+        thresholds = DEFAULT_THRESHOLDS.copy()
+        if custom_thresholds:
+            try:
+                import json
+                custom_dict = json.loads(custom_thresholds)
+                thresholds.update(custom_dict)
+                print(f"📊 Seuils personnalisés parsés: {custom_dict}")
+                print(f"📊 Seuils finaux utilisés: {thresholds}")
+            except Exception as e:
+                print(f"⚠️ Erreur parsing seuils custom: {e}")
+                print(f"⚠️ custom_thresholds reçu: {repr(custom_thresholds)}")
+                thresholds = DEFAULT_THRESHOLDS
+        else:
+            print("⚠️ Aucun seuil personnalisé reçu, utilisation des défauts")
         threshold = thresholds.get(predicted_gesture, 0.7)
         
         # Détection
         gesture_detected = confidence >= threshold and predicted_gesture != 'neutral'
+
+        
+        print(f"🎯 Détection: {predicted_gesture} (conf: {confidence:.2f}, seuil: {threshold:.2f}, détecté: {gesture_detected})")
+        
         
         # Réponse de base
         response = {
@@ -414,13 +435,13 @@ async def detect_advanced(
         }
         
         # Ajouter debug si demandé
-        if return_debug:
+        if return_debug_bool:
             response["debug_info"] = debug_info
             response["image_shape"] = img.shape
             response["thresholds_config"] = thresholds
         
         # Traiter l'image si demandé
-        if return_image or apply_filters:
+        if return_image_bool or apply_filters_bool:
             processed_img = img.copy()
             
             # Ajouter annotations de base
@@ -429,7 +450,7 @@ async def detect_advanced(
                        (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
             
             # Appliquer filtres si demandé et disponible
-            if apply_filters and filter_system and gesture_detected and predicted_gesture != 'neutral':
+            if apply_filters_bool and filter_system and gesture_detected and predicted_gesture != 'neutral':
                 # Extraire keypoints pour les filtres
                 keypoints = None
                 if hasattr(model, 'pose_detector'):
@@ -443,7 +464,7 @@ async def detect_advanced(
                     processed_img, predicted_gesture, keypoints
                 )
             
-            if return_image:
+            if return_image_bool:
                 # Encoder l'image en base64
                 img_base64 = encode_image_to_base64(processed_img)
                 response["annotated_image"] = img_base64
@@ -451,6 +472,7 @@ async def detect_advanced(
         return response
     
     except Exception as e:
+        print(f"❌ Erreur dans detect_advanced: {str(e)}")  # Log pour debug
         raise HTTPException(status_code=500, detail=f"Erreur de traitement: {str(e)}")
 
 @app.post("/batch_detect/")
