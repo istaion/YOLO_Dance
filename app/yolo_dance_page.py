@@ -1,4 +1,3 @@
-import streamlit as st
 import cv2
 import numpy as np
 from datetime import datetime
@@ -6,11 +5,12 @@ import os
 import time
 import torch
 import sys
+import streamlit as st
 
 # Ajouter le chemin vers les scripts YOLO
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts', 'yolo_pipeline'))
 
-# Importer le système pondéré
+# Importer le système pondéré et les filtres
 try:
     from yolo_model_weighted import YoloDanceSystemWeighted
     WEIGHTED_AVAILABLE = True
@@ -18,6 +18,9 @@ except ImportError:
     from yolo_model import YoloDanceSystem
     WEIGHTED_AVAILABLE = False
     st.warning("⚠️ Modèle pondéré non disponible, utilisation du modèle standard")
+
+# Importer le système de filtres
+from utils import GestureFilterSystem
 
 def show_yolo_dance_page():
     """Page YOLO Dance avec support de pondération et seuils par classe"""
@@ -83,6 +86,11 @@ def show_yolo_dance_page():
             st.error(f"❌ Erreur lors du chargement: {e}")
             return None
     
+    # Initialiser le système de filtres
+    @st.cache_resource
+    def init_filter_system():
+        return GestureFilterSystem()
+    
     # Classes disponibles
     yolo_classes = ['hands_up', 'dab', 'twerk', 'jul', 'neutral', 'crossarm']
     
@@ -120,6 +128,35 @@ def show_yolo_dance_page():
     
     # Paramètres dans la sidebar
     st.sidebar.header("⚙️ Paramètres de détection")
+    
+    # Section filtres visuels
+    st.sidebar.subheader("🎨 Filtres visuels")
+    filters_enabled = st.sidebar.checkbox(
+        "Activer les filtres", 
+        value=True,
+        help="Applique des filtres visuels selon le geste détecté"
+    )
+    
+    if filters_enabled:
+        filter_opacity = st.sidebar.slider(
+            "Opacité des filtres",
+            min_value=0.1,
+            max_value=1.0,
+            value=0.8,
+            step=0.1,
+            help="Transparence des filtres appliqués"
+        )
+        
+        with st.sidebar.expander("🎭 Filtres par geste", expanded=False):
+            st.write("🍑 **Twerk** : Pêche sur les hanches")
+            st.write("👑 **Hands Up** : Couronne sur la tête")
+            st.write("⚡ **Dab** : Rayon lumineux")
+            st.write("✝️ **CrossArm** : Croix lumineuse")
+            st.write("🕶️ **Jul** : Lunettes de soleil")
+            st.write("😐 **Neutral** : Aucun filtre")
+    
+    else:
+        filter_opacity = 0.8
     
     # Seuil global (pour référence)
     global_threshold = st.sidebar.slider(
@@ -208,7 +245,11 @@ def show_yolo_dance_page():
     )
     
     def take_yolo_photo(frame, gesture, confidence, model_type):
-        """Prend une photo avec préfixe selon le modèle"""
+        """Prend une photo avec préfixe selon le modèle (SANS FILTRE)"""
+        # Exclure neutral des photos
+        if gesture == 'neutral':
+            return False
+            
         current_time = time.time()
         session_key = f'{session_prefix}last_photo_time'
         
@@ -219,6 +260,8 @@ def show_yolo_dance_page():
             prefix = "yolo_weighted" if model_type == "weighted" else "yolo_standard"
             filename = f"{prefix}_{gesture}_{confidence:.2f}_{ts}_{st.session_state[f'{session_prefix}photo_count']:03d}.jpg"
             filepath = os.path.join(SAVE_DIR, filename)
+            
+            # IMPORTANT: Sauvegarder la frame ORIGINALE sans filtre
             cv2.imwrite(filepath, frame)
             st.session_state[session_key] = current_time
             
@@ -227,10 +270,10 @@ def show_yolo_dance_page():
             return True
         return False
     
-    def process_yolo_detection(frame, yolo_system, model_type):
-        """Traite la détection avec seuils personnalisés par classe"""
+    def process_yolo_detection(frame, yolo_system, model_type, filter_system):
+        """Traite la détection avec seuils personnalisés et filtres"""
         if yolo_system is None:
-            return frame, "neutral", False, False, {}, {}
+            return frame, "neutral", False, False, {}, {}, None
         
         try:
             if detection_mode == "Single Person":
@@ -245,7 +288,17 @@ def show_yolo_dance_page():
             all_predictions = result.get('all_probabilities', {})
             debug_info = result.get('debug_info', {})
             
-            # Frame avec visualisation
+            # Extraire les keypoints pour les filtres
+            keypoints = None
+            if hasattr(yolo_system, 'pose_detector'):
+                yolo_results = yolo_system.pose_detector(frame)
+                if yolo_results and len(yolo_results) > 0:
+                    result_pose = yolo_results[0]
+                    if result_pose.keypoints is not None and len(result_pose.keypoints.data) > 0:
+                        keypoints = result_pose.keypoints.data[0].cpu().numpy().flatten()
+            
+            # Frame avec visualisation (SANS FILTRE pour sauvegarde)
+            frame_original = frame.copy()
             frame_with_detection = frame.copy()
             
             # Utiliser le seuil spécifique à la classe prédite
@@ -278,6 +331,13 @@ def show_yolo_dance_page():
             # Logique de détection avec seuil personnalisé
             gesture_detected = confidence >= class_threshold
             
+            # APPLIQUER LES FILTRES sur frame_with_detection (pour affichage)
+            if filters_enabled and gesture_detected and predicted_gesture != 'neutral':
+                filter_system.set_opacity(filter_opacity)
+                frame_with_detection = filter_system.apply_filter_for_gesture(
+                    frame_with_detection, predicted_gesture, keypoints
+                )
+            
             # Gestion de continuité
             current_time = time.time()
             photo_taken = False
@@ -286,18 +346,19 @@ def show_yolo_dance_page():
             
             if gesture_detected and predicted_gesture == st.session_state[current_gesture_key]:
                 if current_time - st.session_state[gesture_start_key] > GESTURE_DURATION_THRESHOLD:
-                    photo_taken = take_yolo_photo(frame, predicted_gesture, confidence, model_type)
+                    # IMPORTANT: Utiliser frame_original (sans filtre) pour la photo
+                    photo_taken = take_yolo_photo(frame_original, predicted_gesture, confidence, model_type)
             elif gesture_detected and predicted_gesture != st.session_state[current_gesture_key]:
                 st.session_state[current_gesture_key] = predicted_gesture
                 st.session_state[gesture_start_key] = current_time
             elif not gesture_detected:
                 st.session_state[current_gesture_key] = "neutral"
             
-            return frame_with_detection, predicted_gesture, gesture_detected, photo_taken, all_predictions, debug_info
+            return frame_with_detection, predicted_gesture, gesture_detected, photo_taken, all_predictions, debug_info, keypoints
             
         except Exception as e:
             st.error(f"Erreur lors de la prédiction: {e}")
-            return frame, "neutral", False, False, {}, {}
+            return frame, "neutral", False, False, {}, {}, None
     
     # Interface utilisateur principale
     col1, col2, col3, col4 = st.columns(4)
@@ -330,6 +391,7 @@ def show_yolo_dance_page():
     st.header("🎥 Caméra YOLO Dance")
     
     yolo_system = init_yolo_dance(model_path, use_weighted)
+    filter_system = init_filter_system()
     model_type = "weighted" if use_weighted else "standard"
     
     if st.button(f"🤖 Lancer {model_type_display}", type="primary", key="start_yolo"):
@@ -370,8 +432,8 @@ def show_yolo_dance_page():
                 frame = cv2.flip(frame, 1)
                 
                 # Traitement avec le modèle sélectionné
-                processed_frame, detected_gesture, gesture_detected, photo_taken, all_predictions, debug_info = process_yolo_detection(
-                    frame, yolo_system, model_type
+                processed_frame, detected_gesture, gesture_detected, photo_taken, all_predictions, debug_info, keypoints = process_yolo_detection(
+                    frame, yolo_system, model_type, filter_system
                 )
                 
                 # Effet flash pour les photos
@@ -537,7 +599,7 @@ def show_yolo_dance_page():
                 st.write("❌ Peut être perturbé par le bruit")
     
     # Conseils d'utilisation selon le modèle
-    with st.expander("💡 Conseils d'utilisation et seuils"):
+    with st.expander("💡 Conseils d'utilisation, seuils et filtres"):
         st.write("**🎛️ Configuration des seuils par classe :**")
         st.write("""
         - **Seuil élevé (0.8+)** : Détection très stricte, moins de faux positifs
@@ -548,7 +610,20 @@ def show_yolo_dance_page():
         - **Dab, Hands_up** : Seuil élevé (0.7-0.8) - gestes distinctifs
         - **Twerk, Jul** : Seuil moyen (0.6-0.7) - plus de nuances
         - **Crossarm** : Seuil moyen (0.6-0.7) - peut être confondu
-        - **Neutral** : Seuil bas (0.4-0.6) - état par défaut
+        - **Neutral** : Seuil bas (0.4-0.6) - état par défaut (AUCUNE PHOTO)
+        """)
+        
+        st.write("**🎨 Système de filtres visuels :**")
+        st.write("""
+        - **🍑 Twerk** : Pêche positionnée automatiquement sur les hanches
+        - **👑 Hands Up** : Couronne royale au-dessus de la tête
+        - **⚡ Dab** : Rayon lumineux dans l'alignement du bras levé
+        - **✝️ CrossArm** : Croix lumineuse sur le torse
+        - **🕶️ Jul** : Lunettes de soleil sur les yeux
+        - **😐 Neutral** : Aucun filtre appliqué
+        
+        ⚠️ **Important** : Les filtres ne sont appliqués QUE sur l'affichage en direct.
+        Les photos sauvegardées sont SANS filtre (image originale).
         """)
         
         if use_weighted:
@@ -576,7 +651,21 @@ def show_yolo_dance_page():
         - 📏 Distance 1.5-2m de la caméra
         - ⏱️ Maintenez la pose 1-2 secondes
         - 🎬 Arrière-plan dégagé et contrasté
+        - 🎨 Activez les filtres pour plus de fun !
         """)
+        
+        # Section de test des filtres
+        st.write("**🧪 Test des filtres (aperçu) :**")
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            if st.button("🍑 Aperçu Twerk"):
+                st.write("Pêche sur les hanches")
+        with col_f2:
+            if st.button("👑 Aperçu Hands Up"):
+                st.write("Couronne royale")
+        with col_f3:
+            if st.button("⚡ Aperçu Dab"):
+                st.write("Rayon lumineux")
 
 # Point d'entrée principal
 if __name__ == "__main__":
