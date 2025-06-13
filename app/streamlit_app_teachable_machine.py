@@ -1,4 +1,5 @@
-# streamlit_app_teachable_machine.py
+#app/streamlit_app_teachable_machine.py
+
 import streamlit as st
 import cv2
 import numpy as np

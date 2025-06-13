@@ -1,4 +1,5 @@
-# teachable_machine_adapter_simple.py
+#app/teachable_machine_adapter_simple.py
+
 import numpy as np
 import cv2
 import json

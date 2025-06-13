@@ -1,3 +1,5 @@
+# app/config/settings.py
+
 """
 Configuration de l'application YOLO Dance
 """
@@ -29,7 +31,7 @@ DEFAULT_PRIORITY_GESTURES = [
 
 # 📱 Configuration Streamlit
 PAGE_CONFIG = {
-    "page_title": " YOLO Dance",
+    "page_title": "🕺 YOLO Dance",
     "page_icon": "🕺",
     "layout": "wide",
     "initial_sidebar_state": "expanded"
@@ -66,4 +68,53 @@ CAMERA_CONFIG = {
     "fps_limit": 30,
     "mirror": True,
     "default_camera_id": 0
+}
+
+# 🔗 Configuration API
+API_CONFIG = {
+    "default_base_url": "http://localhost:8000",
+    "timeout": 15,
+    "health_check_timeout": 5,
+    "retry_attempts": 3
+}
+
+# 🤖 Configuration des modèles
+MODEL_CONFIG = {
+    "default_model": "teachable_machine",  # ou "api"
+    "teachable_machine": {
+        "confidence_threshold": 0.7,
+        "gesture_duration_threshold": 1.0,
+        "priority_gestures": [
+            "Twerk", "Dab", "Macaréna", "Floss", "Funk", "CrossArm"
+        ]
+    },
+    "api": {
+        "confidence_threshold": 0.5,
+        "gesture_duration_threshold": 0.5,
+        "priority_gestures": [
+            "hands_up", "dab", "jump", "twerk"
+        ]
+    }
+}
+
+# 🕺 Gestes disponibles par modèle
+MODEL_GESTURES = {
+    "teachable_machine": [
+        "Twerk", "Dab", "Macaréna", "Floss", "Funk", 
+        "CrossArm", "V_Signs", "RussianMoove", "PasDuBourré",
+        "CrossFeat", "GlassMoove", "Fuck", "JulSign", 
+        "Neutral", "Blood"
+    ],
+    "api": [
+        "hands_up", "dab", "jump", "twerk", "Neutral"
+    ]
+}
+
+# 🎨 Émojis pour les gestes API
+API_GESTURE_EMOJIS = {
+    "hands_up": "🙌",
+    "dab": "💪", 
+    "jump": "🦘",
+    "twerk": "🍑",
+    "Neutral": "😐"
 }
