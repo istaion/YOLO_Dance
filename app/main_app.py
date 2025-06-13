@@ -351,7 +351,7 @@ def show_teachable_machine_page():
                 for i, img_file in enumerate(image_files[:6]):
                     with cols[i % 3]:
                         img_path = os.path.join(SAVE_DIR, img_file)
-                        st.image(img_path, caption=img_file, use_column_width=True)
+                        st.image(img_path, caption=img_file, use_container_width=True)
             else:
                 st.info("Aucune photo prise avec le modèle Teachable Machine")
 

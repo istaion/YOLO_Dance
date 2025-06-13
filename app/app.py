@@ -200,4 +200,4 @@ if st.session_state.photo_count > 0:
         for i, img_file in enumerate(image_files[:3]):
             with cols[i]:
                 img_path = os.path.join(SAVE_DIR, img_file)
-                st.image(img_path, caption=img_file, use_column_width=True)
+                st.image(img_path, caption=img_file, use_container_width=True)

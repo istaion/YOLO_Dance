@@ -20,7 +20,7 @@ except ImportError:
     st.warning("⚠️ Modèle pondéré non disponible, utilisation du modèle standard")
 
 def show_yolo_dance_page():
-    """Page YOLO Dance avec support de pondération"""
+    """Page YOLO Dance avec support de pondération et seuils par classe"""
     
     # Configuration des chemins
     SAVE_DIR = os.path.join(os.path.dirname(__file__), "..", "images", "yolo_dance")
@@ -83,15 +83,22 @@ def show_yolo_dance_page():
             st.error(f"❌ Erreur lors du chargement: {e}")
             return None
     
+    # Classes disponibles
+    yolo_classes = ['hands_up', 'dab', 'twerk', 'jul', 'neutral', 'crossarm']
+    
     # Variables de session
     session_prefix = 'weighted_' if use_weighted else 'standard_'
     
-    for key in ['photo_count', 'last_photo_time', 'current_gesture', 'gesture_start_time', 'confidence_threshold']:
+    # Initialiser les seuils par classe
+    thresholds_key = f'{session_prefix}class_thresholds'
+    if thresholds_key not in st.session_state:
+        # Seuils par défaut pour chaque classe
+        st.session_state[thresholds_key] = {cls: 0.7 for cls in yolo_classes}
+    
+    for key in ['photo_count', 'last_photo_time', 'current_gesture', 'gesture_start_time']:
         session_key = f'{session_prefix}{key}'
         if session_key not in st.session_state:
-            if key == 'confidence_threshold':
-                st.session_state[session_key] = 0.7 if use_weighted else 0.6
-            elif key == 'photo_count':
+            if key == 'photo_count':
                 st.session_state[session_key] = 0
             elif key == 'last_photo_time':
                 st.session_state[session_key] = 0
@@ -114,15 +121,75 @@ def show_yolo_dance_page():
     # Paramètres dans la sidebar
     st.sidebar.header("⚙️ Paramètres de détection")
     
-    confidence_threshold = st.sidebar.slider(
-        "Seuil de confiance", 
+    # Seuil global (pour référence)
+    global_threshold = st.sidebar.slider(
+        "Seuil global (référence)", 
         min_value=0.1, 
         max_value=1.0, 
-        value=st.session_state[f'{session_prefix}confidence_threshold'], 
+        value=0.7, 
         step=0.05,
-        help="Plus élevé = détection plus stricte"
+        help="Applique ce seuil à toutes les classes"
     )
-    st.session_state[f'{session_prefix}confidence_threshold'] = confidence_threshold
+    
+    # Bouton pour appliquer le seuil global
+    if st.sidebar.button("🎯 Appliquer seuil global à toutes les classes"):
+        for cls in yolo_classes:
+            st.session_state[thresholds_key][cls] = global_threshold
+        st.sidebar.success(f"Seuil {global_threshold:.2f} appliqué à toutes les classes")
+    
+    # Seuils individuels par classe
+    st.sidebar.subheader("🎛️ Seuils par classe")
+    st.sidebar.caption("Personnalisez la sensibilité de chaque geste")
+    
+    # Grouper les classes pour un affichage organisé
+    gesture_groups = {
+        "🕺 Gestes principaux": ['dab', 'hands_up', 'twerk'],
+        "🎭 Gestes spéciaux": ['jul', 'crossarm'],
+        "⚖️ État neutre": ['neutral']
+    }
+    
+    for group_name, group_classes in gesture_groups.items():
+        with st.sidebar.expander(group_name, expanded=True):
+            for cls in group_classes:
+                current_threshold = st.session_state[thresholds_key][cls]
+                
+                # Emoji pour chaque classe
+                class_emojis = {
+                    'dab': '🕺',
+                    'hands_up': '🙌',
+                    'twerk': '💃',
+                    'jul': '🎤',
+                    'crossarm': '🤷',
+                    'neutral': '😐'
+                }
+                
+                emoji = class_emojis.get(cls, '🎯')
+                
+                new_threshold = st.slider(
+                    f"{emoji} {cls}",
+                    min_value=0.1,
+                    max_value=1.0,
+                    value=current_threshold,
+                    step=0.05,
+                    key=f"threshold_{cls}_{session_prefix}",
+                    help=f"Seuil de confiance pour détecter '{cls}'"
+                )
+                
+                st.session_state[thresholds_key][cls] = new_threshold
+                
+                # Indicateur visuel du niveau
+                if new_threshold >= 0.8:
+                    st.caption("🟢 Très strict")
+                elif new_threshold >= 0.6:
+                    st.caption("🟡 Équilibré")
+                else:
+                    st.caption("🔴 Permissif")
+    
+    # Bouton reset des seuils
+    if st.sidebar.button("🔄 Reset seuils (0.7 partout)"):
+        for cls in yolo_classes:
+            st.session_state[thresholds_key][cls] = 0.7
+        st.sidebar.success("Seuils remis à 0.7 pour toutes les classes")
     
     photo_cooldown = st.sidebar.slider(
         "Délai entre photos (s)", 
@@ -130,22 +197,6 @@ def show_yolo_dance_page():
         max_value=10.0, 
         value=PHOTO_COOLDOWN, 
         step=0.5
-    )
-    
-    # Classes et gestes prioritaires
-    yolo_classes = ['hands_up', 'dab', 'twerk', 'jul', 'neutral', 'crossarm']
-    
-    if use_weighted:
-        # Pour le modèle pondéré, recommander les gestes bien détectés par YOLO pose
-        default_priority = ['dab', 'hands_up', 'crossarm', 'twerk']
-        st.sidebar.info("💡 Gestes recommandés pour modèle pondéré: dab, hands_up, crossarm")
-    else:
-        default_priority = ['dab', 'twerk', 'hands_up', 'jul', 'crossarm']
-    
-    priority_gestures = st.sidebar.multiselect(
-        "Gestes à capturer en priorité",
-        yolo_classes,
-        default=default_priority
     )
     
     # Mode de détection
@@ -177,7 +228,7 @@ def show_yolo_dance_page():
         return False
     
     def process_yolo_detection(frame, yolo_system, model_type):
-        """Traite la détection avec monitoring de pondération"""
+        """Traite la détection avec seuils personnalisés par classe"""
         if yolo_system is None:
             return frame, "neutral", False, False, {}, {}
         
@@ -197,35 +248,35 @@ def show_yolo_dance_page():
             # Frame avec visualisation
             frame_with_detection = frame.copy()
             
+            # Utiliser le seuil spécifique à la classe prédite
+            class_threshold = st.session_state[thresholds_key].get(predicted_gesture, 0.7)
+            
             # Couleur selon le modèle et la confiance
             if model_type == "weighted":
-                color = (0, 255, 0) if confidence >= confidence_threshold else (0, 165, 255)  # Vert ou Orange
+                color = (0, 255, 0) if confidence >= class_threshold else (0, 165, 255)  # Vert ou Orange
                 model_text = f"PONDÉRÉ: {predicted_gesture.upper()}"
             else:
-                color = (255, 0, 0) if confidence >= confidence_threshold else (0, 0, 255)  # Rouge ou Bleu
+                color = (255, 0, 0) if confidence >= class_threshold else (0, 0, 255)  # Rouge ou Bleu
                 model_text = f"STANDARD: {predicted_gesture.upper()}"
             
             # Dessiner l'interface
-            cv2.rectangle(frame_with_detection, (10, 10), (frame.shape[1]-10, 120), color, 3)
+            cv2.rectangle(frame_with_detection, (10, 10), (frame.shape[1]-10, 140), color, 3)
             cv2.putText(frame_with_detection, model_text, (20, 40), 
                        cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             cv2.putText(frame_with_detection, f"Conf: {confidence:.1%}", (20, 70), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            cv2.putText(frame_with_detection, f"Seuil {predicted_gesture}: {class_threshold:.1%}", (20, 100), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
             # Affichage de la pondération si disponible
             if model_type == "weighted" and debug_info:
                 pose_weight = debug_info.get('pose_features_weight', 'N/A')
                 hand_weight = debug_info.get('hand_features_weight', 'N/A')
-                cv2.putText(frame_with_detection, f"Pose:{pose_weight}x Hand:{hand_weight}x", (20, 100), 
+                cv2.putText(frame_with_detection, f"Pose:{pose_weight}x Hand:{hand_weight}x", (20, 130), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
-            # Logique de détection
-            gesture_detected = confidence >= confidence_threshold
-            
-            if gesture_detected and predicted_gesture in priority_gestures:
-                gesture_detected = True
-            elif gesture_detected and predicted_gesture not in priority_gestures:
-                gesture_detected = confidence >= confidence_threshold + 0.1
+            # Logique de détection avec seuil personnalisé
+            gesture_detected = confidence >= class_threshold
             
             # Gestion de continuité
             current_time = time.time()
@@ -253,12 +304,23 @@ def show_yolo_dance_page():
     with col1:
         st.metric("Photos prises", st.session_state[f'{session_prefix}photo_count'])
     with col2:
-        st.metric("Geste détecté", st.session_state[f'{session_prefix}current_gesture'])
+        current_gesture = st.session_state[f'{session_prefix}current_gesture']
+        st.metric("Geste détecté", current_gesture)
     with col3:
         cooldown_remaining = max(0, photo_cooldown - (time.time() - st.session_state[f'{session_prefix}last_photo_time']))
         st.metric("Cooldown", f"{cooldown_remaining:.1f}s")
     with col4:
-        st.metric("Seuil", f"{confidence_threshold:.1%}")
+        # Afficher le seuil de la classe actuelle
+        current_threshold = st.session_state[thresholds_key].get(current_gesture, 0.7)
+        st.metric("Seuil actuel", f"{current_threshold:.1%}")
+    
+    # Affichage des seuils configurés
+    with st.expander("🎛️ Seuils configurés", expanded=False):
+        threshold_cols = st.columns(3)
+        for i, (cls, threshold) in enumerate(st.session_state[thresholds_key].items()):
+            with threshold_cols[i % 3]:
+                emoji = {'dab': '🕺', 'hands_up': '🙌', 'twerk': '💃', 'jul': '🎤', 'crossarm': '🤷', 'neutral': '😐'}.get(cls, '🎯')
+                st.metric(f"{emoji} {cls}", f"{threshold:.1%}")
     
     # Informations sur le modèle
     model_type_display = "Pondéré 🎯" if use_weighted else "Standard 📊"
@@ -325,13 +387,14 @@ def show_yolo_dance_page():
                 # Affichage vidéo
                 video_container.image(cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB), channels="RGB")
                 
-                # Affichage du statut avec info pondération
+                # Affichage du statut avec seuil utilisé
                 status_icon = "✅" if gesture_detected else "❌"
                 confidence_val = all_predictions.get(detected_gesture, 0.0) if all_predictions else 0.0
+                used_threshold = st.session_state[thresholds_key].get(detected_gesture, 0.7)
                 
                 status_text = f"**Statut {model_type_display}:** {detected_gesture} {status_icon}"
                 if confidence_val > 0:
-                    status_text += f" | Confiance: {confidence_val:.1%}"
+                    status_text += f" | Confiance: {confidence_val:.1%} (seuil: {used_threshold:.1%})"
                 
                 if use_weighted and debug_info:
                     hands_detected = debug_info.get('hands_detected', 0)
@@ -339,25 +402,34 @@ def show_yolo_dance_page():
                 
                 status_container.write(status_text)
                 
-                # Affichage des prédictions avec pondération
+                # Affichage des prédictions avec indication des seuils
                 if all_predictions:
                     sorted_predictions = sorted(all_predictions.items(), key=lambda x: x[1], reverse=True)
                     top_5 = sorted_predictions[:5]
                     
                     pred_text = f"**Top 5 prédictions {model_type_display}:**\n"
                     for i, (gesture, conf) in enumerate(top_5):
+                        gesture_threshold = st.session_state[thresholds_key].get(gesture, 0.7)
+                        
+                        if conf >= gesture_threshold:
+                            status_emoji = "✅"
+                        elif conf >= gesture_threshold - 0.1:
+                            status_emoji = "⚠️"
+                        else:
+                            status_emoji = "❌"
+                        
                         if use_weighted:
                             # Indiquer quels gestes sont favorisés par la pondération
                             if gesture in ['hands_up', 'crossarm']:  # Gestes bien détectés par pose
-                                emoji = "🎯"
+                                type_emoji = "🎯"
                             elif gesture in ['dab']:  # Gestes nécessitant les mains
-                                emoji = "👋"
+                                type_emoji = "👋"
                             else:
-                                emoji = "📊"
+                                type_emoji = "📊"
                         else:
-                            emoji = "🎯" if conf > 0.5 else "📊"
+                            type_emoji = "📊"
                         
-                        pred_text += f"{emoji} {gesture}: {conf:.1%}\n"
+                        pred_text += f"{status_emoji} {type_emoji} {gesture}: {conf:.1%} (seuil: {gesture_threshold:.1%})\n"
                     predictions_container.write(pred_text)
                 
                 # Debug info pour modèle pondéré
@@ -407,7 +479,8 @@ def show_yolo_dance_page():
                         if len(parts) >= 4:
                             gesture = parts[2]
                             confidence = parts[3]
-                            caption = f"{gesture} ({confidence})"
+                            used_threshold = st.session_state[thresholds_key].get(gesture, 0.7)
+                            caption = f"{gesture} (conf: {confidence}, seuil: {used_threshold:.1%})"
                         else:
                             caption = img_file
                         
@@ -464,7 +537,20 @@ def show_yolo_dance_page():
                 st.write("❌ Peut être perturbé par le bruit")
     
     # Conseils d'utilisation selon le modèle
-    with st.expander("💡 Conseils d'utilisation"):
+    with st.expander("💡 Conseils d'utilisation et seuils"):
+        st.write("**🎛️ Configuration des seuils par classe :**")
+        st.write("""
+        - **Seuil élevé (0.8+)** : Détection très stricte, moins de faux positifs
+        - **Seuil moyen (0.6-0.8)** : Équilibre entre précision et sensibilité  
+        - **Seuil bas (0.4-0.6)** : Détection permissive, plus de vrais positifs mais plus de bruit
+        
+        **💡 Recommandations par geste :**
+        - **Dab, Hands_up** : Seuil élevé (0.7-0.8) - gestes distinctifs
+        - **Twerk, Jul** : Seuil moyen (0.6-0.7) - plus de nuances
+        - **Crossarm** : Seuil moyen (0.6-0.7) - peut être confondu
+        - **Neutral** : Seuil bas (0.4-0.6) - état par défaut
+        """)
+        
         if use_weighted:
             st.write("""
             **🎯 Optimisation pour modèle pondéré :**
@@ -492,7 +578,6 @@ def show_yolo_dance_page():
         - 🎬 Arrière-plan dégagé et contrasté
         """)
 
-# Point d'entrée mis à jour
-def show_yolo_dance_page_updated():
-    """Point d'entrée pour la page YOLO avec support pondération"""
-    return show_yolo_dance_page()
+# Point d'entrée principal
+if __name__ == "__main__":
+    show_yolo_dance_page()
