@@ -1,0 +1,17 @@
+ultralytics==8.3.148
+ipykernel==6.29.5
+scikit-learn==1.6.1
+streamlit==1.45.1
+opencv-python==4.11.0.86
+numpy==2.2.6
+pillow==11.2.1
+requests==2.32.3
+uvicorn==0.34.3
+fastapi==0.115.12
+python-multipart==0.0.20
+bcrypt==4.3.0
+passlib==1.7.4
+Pyjwt==2.10.1
+dotenv==0.9.9
+email-validator==2.2.0
+sqlalchemy==2.0.4
