@@ -394,3 +394,53 @@ class GestureFilterSystem:
     def set_opacity(self, opacity: float):
         """Définit l'opacité des filtres (0.0 à 1.0)"""
         self.filter_opacity = max(0.0, min(1.0, opacity))
+
+# Dans api/utils.py ou api/evaluation.py
+
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from torch.utils.data import Dataset, DataLoader
+import torch
+import numpy as np
+
+class DanceFeaturesDataset(Dataset):
+    def __init__(self, features, labels):
+        self.X = torch.tensor(features, dtype=torch.float32)
+        self.y = torch.tensor(labels, dtype=torch.long)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+def evaluate_model(model, dataloader, device='cpu', class_names=None):
+    model.eval()
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for X_batch, y_batch in dataloader:
+            X_batch = X_batch.to(device)
+            y_batch = y_batch.to(device)
+
+            outputs = model(X_batch)
+            preds = torch.argmax(outputs, dim=1)
+
+            all_preds.append(preds.cpu().numpy())
+            all_labels.append(y_batch.cpu().numpy())
+
+    y_true = np.concatenate(all_labels)
+    y_pred = np.concatenate(all_preds)
+
+    acc = accuracy_score(y_true, y_pred)
+    print(f"\n🎯 Accuracy: {acc:.4f}\n")
+
+    if class_names:
+        print(classification_report(y_true, y_pred, target_names=class_names))
+    else:
+        print(classification_report(y_true, y_pred))
+
+    print("📊 Confusion Matrix:")
+    print(confusion_matrix(y_true, y_pred))
+
+    return y_true, y_pred

@@ -410,3 +410,4 @@ def convert_old_model_to_weighted(old_model_path, new_model_path):
     }, new_model_path)
     
     print(f"✅ Modèle pondéré sauvegardé: {new_model_path}")
+
